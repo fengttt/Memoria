@@ -143,7 +143,7 @@ TrustMem needs an embedding model to vectorize memories for semantic search.
 
 | Provider | Quality | Cost | First-use latency | Ongoing latency |
 |----------|---------|------|-------------------|-----------------|
-| **Local** (default) | Good | Free, private | ~1 min model download (~80MB) + a few seconds to load model into memory on first query | Fast (in-process) |
+| **Local** (default) | Good | Free, private | ~900MB download (torch + sentence-transformers) + a few seconds to load model into memory on first query | Fast (in-process) |
 | **OpenAI** | Better | API key required | None | Network round-trip |
 | **Custom service** | Varies | Self-hosted | None | Network round-trip |
 
