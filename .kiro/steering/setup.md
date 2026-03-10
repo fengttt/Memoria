@@ -24,14 +24,19 @@ Based on the answer:
 
 ### Question 3: Embedding provider
 
-**⚠️ WARN THE USER BEFORE PROCEEDING**: `[local-embedding]` pulls `sentence-transformers` + `torch`, which is **~900MB**. On slow or proxied networks this will time out.
+Ask: "For memory search quality, TrustMem needs an embedding model. Do you already have an OpenAI-compatible embedding endpoint? (OpenAI, SiliconFlow, Ollama, or any custom service)
+- **Yes** → use it directly. No download, no cold-start. Best choice.
+- **No** → use local model. ⚠️ downloads ~900MB (torch + sentence-transformers) on first install. Avoid on slow/proxied networks."
 
-Ask: "For memory search quality, TrustMem needs an embedding model. Options:
-1. **Existing service** (recommended if available) — OpenAI, Ollama, or any embedding endpoint you already run. No download, no cold-start. **Best choice if you have one.**
-2. **OpenAI** — better quality, needs API key, no cold-start delay, no large download.
-3. **Local** (free, private) — ⚠️ downloads ~900MB (torch + sentence-transformers) on first install. **Avoid on slow/proxied networks.**"
+**If user has an existing embedding service**, ask:
+- "What is the API base URL? (e.g. `https://api.siliconflow.cn/v1`, `http://localhost:11434/v1`, or leave blank for OpenAI official)"
+- "API key? (leave blank if not required)"
+- "Model name? (e.g. `BAAI/bge-m3`, `text-embedding-3-small`)"
+- "Embedding dimension? (e.g. 1024 for bge-m3, 1536 for text-embedding-3-small)"
 
-**If user chooses local embedding, explicitly warn**: "This will download ~900MB. If you're on a slow or proxied network, consider using OpenAI or an existing embedding service instead. Proceed?"
+These values get written into the `env` block of `mcp.json` automatically — no manual editing needed.
+
+**If user chooses local embedding, explicitly warn**: "This will download ~900MB. If you're on a slow or proxied network, consider using an OpenAI-compatible service instead. Proceed?"
 
 ## Execution Rules
 
@@ -66,13 +71,17 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 ```bash
-# Step 5: Install TrustMem (run alone — this may take a while if using local-embedding)
+# Step 5: Install TrustMem (run alone)
+# If using local embedding:
 pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ 'trust-mem-lite[local-embedding]'
+# If using an existing embedding service (no 900MB download):
+pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ trust-mem-lite
 ```
 ```bash
 # Step 6: Configure (in user's project directory)
+# Add embedding flags based on Question 3 answer — see "Embedding provider flags" section below
 cd <user-project>
-trustmem init
+trustmem init  # + embedding flags if applicable
 ```
 
 ### Path B: MatrixOne Cloud
@@ -90,11 +99,14 @@ source .venv/bin/activate
 ```bash
 # 4. Install
 pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ 'trust-mem-lite[local-embedding]'
+# or, if using an existing embedding service:
+# pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ trust-mem-lite
 ```
 ```bash
 # 5. Configure with cloud URL
 cd <user-project>
 trustmem init --db-url 'mysql+pymysql://<user>:<password>@<host>:<port>/<database>'
+# + embedding flags if applicable (see "Embedding provider flags" section)
 ```
 
 ### Path C: Existing MatrixOne
@@ -109,11 +121,14 @@ source .venv/bin/activate
 ```bash
 # 2. Install
 pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ 'trust-mem-lite[local-embedding]'
+# or, if using an existing embedding service:
+# pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ trust-mem-lite
 ```
 ```bash
 # 3. Configure with existing DB
 cd <user-project>
 trustmem init --db-url 'mysql+pymysql://<user>:<password>@<host>:<port>/<database>'
+# + embedding flags if applicable (see "Embedding provider flags" section)
 ```
 
 ### Embedding provider flags (for any path)
@@ -125,8 +140,26 @@ trustmem init
 # OpenAI
 trustmem init --embedding-provider openai --embedding-api-key sk-...
 
-# Existing service (Ollama, custom endpoint, etc.)
-trustmem init --embedding-provider openai --embedding-base-url http://localhost:11434/v1
+# Existing service (Ollama, SiliconFlow, custom endpoint, etc.)
+# All of these get written into the env block of mcp.json automatically
+trustmem init \
+  --embedding-provider openai \
+  --embedding-base-url https://api.siliconflow.cn/v1 \
+  --embedding-api-key sk-... \
+  --embedding-model BAAI/bge-m3 \
+  --embedding-dim 1024
+```
+
+The resulting `mcp.json` `env` block will contain:
+```json
+{
+  "TRUSTMEM_DB_URL": "...",
+  "EMBEDDING_PROVIDER": "openai",
+  "EMBEDDING_BASE_URL": "https://api.siliconflow.cn/v1",
+  "EMBEDDING_API_KEY": "sk-...",
+  "EMBEDDING_MODEL": "BAAI/bge-m3",
+  "EMBEDDING_DIM": "1024"
+}
 ```
 
 ## After any path

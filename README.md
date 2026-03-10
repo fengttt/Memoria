@@ -240,15 +240,22 @@ TrustMem needs an embedding model to vectorize memories for semantic search.
 **Recommendation**: If you already have an embedding service running (OpenAI, Ollama, or custom endpoint), use it — avoids the local model download and cold-start latency. Otherwise, local embedding works well; the download and model load only happen once.
 
 ```bash
-# Local (default) — free, private, ~80MB model download on first use
+# Local (default) — no extra flags needed
 trustmem init --embedding-provider local
 
 # OpenAI — better quality, requires API key, no cold-start delay
 trustmem init --embedding-provider openai --embedding-api-key sk-...
 
-# Custom endpoint (Ollama, etc.) — use an existing embedding service
-trustmem init --embedding-provider openai --embedding-base-url http://localhost:11434/v1
+# Custom endpoint (Ollama, SiliconFlow, etc.) — use an existing embedding service
+trustmem init \
+  --embedding-provider openai \
+  --embedding-base-url https://api.siliconflow.cn/v1 \
+  --embedding-api-key sk-... \
+  --embedding-model BAAI/bge-m3 \
+  --embedding-dim 1024
 ```
+
+The `--embedding-api-key`, `--embedding-base-url`, `--embedding-model`, and `--embedding-dim` flags are all written into the `env` block of `mcp.json` automatically, so the MCP server picks them up without any manual editing.
 
 ---
 
