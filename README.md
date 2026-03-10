@@ -306,6 +306,8 @@ trustmem init \
 
 All flags are written into the `env` block of `mcp.json` automatically — no manual editing needed.
 
+**Note**: The generated config includes all environment variables (even if empty) as a guide for manual configuration. Empty values are treated as "not set" by the MCP server, which uses defaults.
+
 #### Switching Embedding Provider
 
 If you want to switch providers after tables already exist, run `migrate --force` to ALTER the embedding column (this clears existing embeddings — memories are kept but will need to be re-embedded manually via `trustmem governance`):
@@ -479,12 +481,19 @@ TrustMem uses the [Model Context Protocol (MCP)](https://modelcontextprotocol.io
       "command": "python",
       "args": ["-m", "mo_memory_mcp"],
       "env": {
-        "TRUSTMEM_DB_URL": "mysql+pymysql://root:111@localhost:6001/trustmem"
+        "TRUSTMEM_DB_URL": "mysql+pymysql://root:111@localhost:6001/trustmem",
+        "EMBEDDING_PROVIDER": "",
+        "EMBEDDING_MODEL": "",
+        "EMBEDDING_DIM": "",
+        "EMBEDDING_API_KEY": "",
+        "EMBEDDING_BASE_URL": ""
       }
     }
   }
 }
 ```
+
+The `env` block shows all configurable variables. Empty strings mean "use default" — the MCP server will use local embedding (all-MiniLM-L6-v2, dim=384) when provider is unset.
 
 See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed integration examples.
 

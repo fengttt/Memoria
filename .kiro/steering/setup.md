@@ -150,7 +150,7 @@ trustmem init \
   --embedding-dim 1024
 ```
 
-The resulting `mcp.json` `env` block will contain:
+The resulting `mcp.json` `env` block will contain all configurable variables (even if empty):
 ```json
 {
   "TRUSTMEM_DB_URL": "...",
@@ -161,6 +161,8 @@ The resulting `mcp.json` `env` block will contain:
   "EMBEDDING_DIM": "1024"
 }
 ```
+
+Empty values (e.g. `""`) are treated as "not set" — the MCP server uses defaults (local embedding, dim=384).
 
 ## After any path
 
