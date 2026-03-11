@@ -5,7 +5,7 @@ if not getattr(VectorType, "cache_ok", False):
     VectorType.cache_ok = True
 from matrixone.sqlalchemy_ext import FulltextIndex, FulltextParserType
 from sqlalchemy import (
-    Column, Float, Index, Integer, SmallInteger, String, Text,
+    Column, Float, Index, SmallInteger, String, Text,
 )
 from sqlalchemy.sql import func
 

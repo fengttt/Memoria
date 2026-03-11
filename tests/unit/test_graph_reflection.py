@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from memoria.core.memory.graph.types import Edge, EdgeType, GraphNodeData, NodeType
+from memoria.core.memory.graph.types import Edge, GraphNodeData, NodeType
 
 
 class TestGraphCandidateProvider:

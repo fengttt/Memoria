@@ -1,11 +1,9 @@
 """Tests for OpinionEvolver — evidence-based confidence updates."""
 
-import pytest
 
 from memoria.core.memory.config import DEFAULT_CONFIG
 from memoria.core.memory.reflection.opinion import (
     OpinionEvolver,
-    OpinionUpdate,
 )
 from memoria.core.memory.types import Memory, MemoryType, TrustTier
 

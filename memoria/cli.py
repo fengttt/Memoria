@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -142,13 +141,13 @@ def _configure_claude(project_dir: Path, entry: dict, force: bool) -> list[str]:
     if claude_md.exists():
         existing = claude_md.read_text()
         if "memoria-version:" in existing:
-            actions.append(f"  ⏭️  CLAUDE.md (already configured)")
+            actions.append("  ⏭️  CLAUDE.md (already configured)")
         else:
             claude_md.write_text(existing.rstrip() + "\n\n" + rule)
-            actions.append(f"  ✅ CLAUDE.md (appended)")
+            actions.append("  ✅ CLAUDE.md (appended)")
     else:
         claude_md.write_text(rule)
-        actions.append(f"  ✅ CLAUDE.md (created)")
+        actions.append("  ✅ CLAUDE.md (created)")
     return actions
 
 

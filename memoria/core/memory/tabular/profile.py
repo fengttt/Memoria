@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Optional
 
 from memoria.core.memory.tabular.store import MemoryStore
 from memoria.core.memory.types import Memory, MemoryType

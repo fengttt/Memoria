@@ -1,0 +1,130 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # ── Job 1: Unit tests (no DB needed) ─────────────────────────────────
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,openai-embedding]"
+
+      - name: Run unit tests
+        run: make test-unit
+
+  # ── Job 2: MCP + e2e tests (needs MatrixOne) ─────────────────────────
+  mcp:
+    runs-on: ubuntu-latest
+    needs: unit
+
+    services:
+      matrixone:
+        image: matrixorigin/matrixone:latest
+        ports:
+          - 6001:6001
+        options: >-
+          --health-cmd "bash -c 'echo > /dev/tcp/127.0.0.1/6001'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+          --health-start-period 30s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,openai-embedding]"
+
+      - name: Run MCP tests
+        env:
+          MEMORIA_MASTER_KEY: ci-master-key-memoria-test
+          EMBEDDING_PROVIDER: openai
+          EMBEDDING_MODEL: ${{ vars.EMBEDDING_MODEL || 'BAAI/bge-m3' }}
+          EMBEDDING_DIM: ${{ vars.EMBEDDING_DIM || '1024' }}
+          EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+          EMBEDDING_BASE_URL: ${{ vars.EMBEDDING_BASE_URL || '' }}
+        run: make test-mcp
+
+  # ── Job 3: Docker regression tests ───────────────────────────────────
+  docker:
+    runs-on: ubuntu-latest
+    needs: unit
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,openai-embedding]"
+
+      - name: Create .env
+        run: |
+          cat > .env << EOF
+          MASTER_KEY=ci-master-key-memoria-test
+          EMBEDDING_PROVIDER=openai
+          EMBEDDING_MODEL=${{ vars.EMBEDDING_MODEL || 'BAAI/bge-m3' }}
+          EMBEDDING_DIM=${{ vars.EMBEDDING_DIM || '1024' }}
+          EMBEDDING_API_KEY=${{ secrets.EMBEDDING_API_KEY }}
+          EMBEDDING_BASE_URL=${{ vars.EMBEDDING_BASE_URL || '' }}
+          EOF
+
+      - name: Build and start services
+        run: make start
+
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf --noproxy localhost http://localhost:8100/health && break
+            echo "Waiting... ($i/30)"
+            sleep 3
+          done
+
+      - name: Run Docker tests
+        env:
+          MEMORIA_URL: http://localhost:8100
+          MEMORIA_MASTER_KEY: ci-master-key-memoria-test
+        run: make test-docker
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop services
+        if: always()
+        run: make stop

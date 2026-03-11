@@ -7,12 +7,11 @@ Uses real DB, real l2_distance, real MemoryStore.
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
 from memoria.core.memory.models.memory import MemoryRecord
-from memoria.core.memory.config import DEFAULT_CONFIG
 from memoria.core.memory.tabular.store import MemoryStore
 from memoria.core.memory.tabular.typed_observer import TypedObserver
 from memoria.core.memory.types import Memory, MemoryType, TrustTier

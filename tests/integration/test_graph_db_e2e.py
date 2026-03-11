@@ -16,7 +16,7 @@ import pytest
 
 import os; EMBEDDING_DIM = int(os.environ.get("MEMORIA_EMBEDDING_DIM", "384"))
 from memoria.core.memory.graph.graph_store import GraphStore
-from memoria.core.memory.graph.types import Edge, EdgeType, GraphNodeData, NodeType
+from memoria.core.memory.graph.types import EdgeType, GraphNodeData, NodeType
 
 
 def _uid() -> str:
@@ -910,7 +910,7 @@ class TestEntityLinking:
     def test_duplicate_link_idempotent(self, store, user_id):
         """Linking same entity to same memory twice → no duplicate edges (ON DUPLICATE KEY)."""
         from memoria.core.memory.graph.graph_builder import GraphBuilder
-        from memoria.core.memory.graph.types import EdgeType, NodeType
+        from memoria.core.memory.graph.types import NodeType
         from memoria.core.memory.types import Memory, MemoryType, TrustTier
 
         builder = GraphBuilder(store)
@@ -950,8 +950,7 @@ class TestEntityLinking:
 
     def test_invalid_memory_id_skipped(self, store, user_id):
         """link_entities with nonexistent memory_id → silently skipped, no error."""
-        from memoria.core.memory.graph.graph_store import _new_id
-        from memoria.core.memory.graph.types import EdgeType, GraphNodeData, NodeType
+        from memoria.core.memory.graph.types import EdgeType
 
         # No graph node exists for this memory_id
         fake_mid = uuid4().hex
@@ -983,7 +982,7 @@ class TestEntityLinking:
 
     def test_link_weight_by_source(self, store, user_id):
         """link_entities_batch produces different edge weights per source."""
-        from memoria.core.memory.graph.types import EdgeType, GraphNodeData, NodeType
+        from memoria.core.memory.graph.types import GraphNodeData, NodeType
 
         # Create a content node to link from
         content = GraphNodeData(

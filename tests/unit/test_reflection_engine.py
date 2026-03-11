@@ -3,10 +3,9 @@
 import json
 from unittest.mock import MagicMock
 
-import pytest
 
 from memoria.core.memory.interfaces import ReflectionCandidate
-from memoria.core.memory.reflection.engine import ReflectionEngine, ReflectionResult, SynthesizedInsight
+from memoria.core.memory.reflection.engine import ReflectionEngine
 from memoria.core.memory.reflection.importance import DAILY_THRESHOLD
 from memoria.core.memory.types import Memory, MemoryType, TrustTier
 

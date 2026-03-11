@@ -1,0 +1,23 @@
+name: PR Title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+jobs:
+  title:
+    name: Check PR title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          PATTERN: '^(feat|fix|docs|style|refactor|perf|test|chore|build|ci|revert)(\([a-z0-9-]+\))?!?:\s+.+'
+        run: |
+          if echo "$TITLE" | grep -qE "$PATTERN"; then
+            echo "✅ PR title OK: $TITLE"
+          else
+            echo "::error::Invalid PR title! Must follow Conventional Commits format."
+            echo "Examples: feat(memory): add branch support  |  fix: correct rollback logic"
+            exit 1
+          fi

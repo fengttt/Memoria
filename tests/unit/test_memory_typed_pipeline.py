@@ -7,7 +7,6 @@ import pytest
 
 from memoria.core.memory.tabular.typed_pipeline import run_typed_memory_pipeline, TypedPipelineResult
 from memoria.core.memory.config import MemoryGovernanceConfig
-from memoria.core.memory.types import Memory, MemoryType
 
 
 @pytest.fixture

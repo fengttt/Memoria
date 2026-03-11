@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
@@ -85,19 +85,19 @@ class TestExplainE2E:
         # Verify stats structure
         assert stats is not None
         print("\n=== RETRIEVER EXPLAIN OUTPUT ===")
-        print(f"Phase 1 (keyword/fallback):")
+        print("Phase 1 (keyword/fallback):")
         print(f"  - attempted: {stats.keyword_attempted}")
         print(f"  - hit: {stats.keyword_hit}")
         print(f"  - error: {stats.keyword_error}")
         print(f"  - candidates: {stats.phase1_candidates}")
         print(f"  - time: {stats.phase1_ms:.2f}ms")
-        print(f"Phase 2 (vector):")
+        print("Phase 2 (vector):")
         print(f"  - attempted: {stats.vector_attempted}")
         print(f"  - hit: {stats.vector_hit}")
         print(f"  - error: {stats.vector_error}")
         print(f"  - candidates: {stats.phase2_candidates}")
         print(f"  - time: {stats.phase2_ms:.2f}ms")
-        print(f"Phase 3 (merge):")
+        print("Phase 3 (merge):")
         print(f"  - merged candidates: {stats.merged_candidates}")
         print(f"  - final count: {stats.final_count}")
         print(f"  - time: {stats.merge_ms:.2f}ms")
@@ -144,7 +144,7 @@ class TestExplainE2E:
         cleanup_memories.append(new_mem.memory_id)
 
         print("\n=== OBSERVER EXPLAIN OUTPUT ===")
-        print(f"Contradiction check:")
+        print("Contradiction check:")
         print(f"  - checked: {stats.checked}")
         print(f"  - found: {stats.found}")
         print(f"  - superseded_id: {stats.superseded_id}")
@@ -191,22 +191,22 @@ class TestExplainE2E:
             db.close()
 
         print("\n=== PIPELINE EXPLAIN OUTPUT ===")
-        print(f"Result:")
+        print("Result:")
         print(f"  - memories_extracted: {result.memories_extracted}")
         print(f"  - memories_validated: {result.memories_validated}")
         print(f"  - memories_rejected: {result.memories_rejected}")
         
         if result.stats:
-            print(f"Stats:")
+            print("Stats:")
             print(f"  - total_ms: {result.stats.total_ms:.2f}ms")
             if result.stats.observer:
-                print(f"  Observer:")
+                print("  Observer:")
                 print(f"    - memories_extracted: {result.stats.observer.memories_extracted}")
                 print(f"    - memories_stored: {result.stats.observer.memories_stored}")
                 print(f"    - memories_superseded: {result.stats.observer.memories_superseded}")
                 print(f"    - total_ms: {result.stats.observer.total_ms:.2f}ms")
             if result.stats.sandbox:
-                print(f"  Sandbox:")
+                print("  Sandbox:")
                 print(f"    - enabled: {result.stats.sandbox.enabled}")
                 print(f"    - validated: {result.stats.sandbox.validated}")
                 print(f"    - error: {result.stats.sandbox.error}")
@@ -257,17 +257,17 @@ class TestExplainE2E:
         )
 
         print("\n=== TIERED LOADER EXPLAIN OUTPUT ===")
-        print(f"L0 (profile):")
+        print("L0 (profile):")
         print(f"  - loaded: {stats.l0_loaded}")
         print(f"  - tokens: {stats.l0_tokens}")
         print(f"  - time: {stats.l0_ms:.2f}ms")
-        print(f"L1 (query-relevant):")
+        print("L1 (query-relevant):")
         print(f"  - loaded: {stats.l1_loaded}")
         print(f"  - count: {stats.l1_count}")
         print(f"  - tokens: {stats.l1_tokens}")
         print(f"  - time: {stats.l1_ms:.2f}ms")
         if stats.retrieval:
-            print(f"  Retrieval details:")
+            print("  Retrieval details:")
             print(f"    - phase1_candidates: {stats.retrieval.phase1_candidates}")
             print(f"    - phase2_candidates: {stats.retrieval.phase2_candidates}")
             print(f"    - final_count: {stats.retrieval.final_count}")

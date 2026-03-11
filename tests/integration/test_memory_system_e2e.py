@@ -12,7 +12,6 @@ from unittest.mock import MagicMock
 from memoria.core.memory.tabular.retriever import TASK_WEIGHTS
 from memoria.core.memory.tabular.typed_observer import TypedObserver
 from memoria.core.tiered_loader import TieredMemoryLoader
-from memoria.core.memory.tabular.service import MemoryService
 from memoria.core.memory.tabular.health import MemoryHealth
 from memoria.core.memory.config import MemoryGovernanceConfig, DEFAULT_CONFIG
 from memoria.core.memory.types import Memory, MemoryType

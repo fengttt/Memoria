@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 from memoria.core.memory.config import MemoryGovernanceConfig, DEFAULT_CONFIG

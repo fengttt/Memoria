@@ -4,7 +4,6 @@ Provides snapshot, restore, and time-travel capabilities.
 """
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 from memoria.core.validation import validate_identifier, QueryRequest
 from memoria.core.db_consumer import DbConsumer, DbFactory
@@ -196,7 +195,7 @@ class GitForData(DbConsumer):
                 """
                 db.execute(text(insert_query))
                 db.commit()
-            except Exception as e:
+            except Exception:
                 db.rollback()
                 raise
 

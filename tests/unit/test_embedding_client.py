@@ -5,7 +5,6 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from memoria.core.embedding.client import EmbeddingClient
-from memoria.core.embedding.providers import LocalProvider, MockProvider, OpenAIProvider
 from tests.conftest import TEST_EMBEDDING_DIM
 
 

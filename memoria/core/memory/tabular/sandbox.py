@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import time
 from memoria.core.utils.id_generator import generate_prefixed_id
-from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import text

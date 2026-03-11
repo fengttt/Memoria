@@ -167,7 +167,7 @@ def link_entities(
 ):
     """Write entity nodes + edges from user-LLM extraction results."""
     from memoria.core.memory.graph.graph_store import GraphStore
-    from memoria.core.memory.graph.types import GraphNodeData, NodeType
+    from memoria.core.memory.graph.types import GraphNodeData
     store = GraphStore(db_factory)
 
     # Resolve memory_ids → graph nodes, collect entities per node

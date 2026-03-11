@@ -17,7 +17,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
-import pytest
 from sqlalchemy import text
 
 from memoria.core.memory.models.memory import MemoryRecord

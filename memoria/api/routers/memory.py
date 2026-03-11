@@ -7,9 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
-from memoria.api.database import get_db_factory, get_db_session
+from memoria.api.database import get_db_factory
 from memoria.api.dependencies import get_current_user_id
 
 router = APIRouter(tags=["memory"])

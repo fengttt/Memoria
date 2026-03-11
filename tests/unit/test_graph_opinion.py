@@ -2,13 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from memoria.core.memory.config import DEFAULT_CONFIG
 from memoria.core.memory.graph.opinion import (
-    OPINION_ACTIVATION_THRESHOLD,
     OPINION_ITERATIONS,
-    OpinionEvolutionResult,
     evolve_opinions,
 )
 from memoria.core.memory.graph.types import GraphNodeData, NodeType

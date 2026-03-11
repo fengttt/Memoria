@@ -1,6 +1,5 @@
 """Unit tests for entity extraction (lightweight regex-based)."""
 
-import pytest
 from memoria.core.memory.graph.entity_extractor import extract_entities_lightweight
 
 

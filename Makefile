@@ -1,6 +1,6 @@
 .PHONY: help start stop logs status build test test-docker test-mcp test-all test-all-cov clean reset \
         cloud-start cloud-stop cloud-logs cloud-status cloud-clean cloud-rebuild \
-        install dev build-wheel publish publish-test bump-version
+        install dev build-wheel publish publish-test bump-version check lint type-check
 
 help:
 	@echo "Memoria — Multi-tenant memory service"
@@ -22,6 +22,7 @@ help:
 	@echo "Development:"
 	@echo "  make install            Install dependencies (editable)"
 	@echo "  make dev                Start API locally (no Docker, needs DB)"
+	@echo "  make check              Run lint + type check"
 	@echo "  make bump-version BUMP=patch  - Bump version (patch/minor/major)"
 	@echo ""
 	@echo "Tests:"
@@ -87,6 +88,15 @@ reset:
 
 install:
 	@pip install -e ".[dev,openai-embedding]"
+
+check: lint type-check
+
+lint:
+	@ruff check memoria/ tests/
+	@ruff format --check memoria/ tests/
+
+type-check:
+	@mypy memoria/
 
 dev:
 	@python -m uvicorn memoria.api.main:app --reload --port 8100

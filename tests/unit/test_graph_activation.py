@@ -1,12 +1,10 @@
 """Unit tests for graph activation and retrieval (Phase 2)."""
 
-import math
 from unittest.mock import MagicMock
 
 import pytest
 
 from memoria.core.memory.graph.activation import (
-    SIGMOID_GAMMA,
     SIGMOID_THETA,
     SpreadingActivation,
     _sigmoid,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 from memoria.core.db_consumer import DbFactory
@@ -314,7 +314,6 @@ class TypedObserver:
 
         from memoria.core.memory.reflection.opinion import OpinionEvolver
 
-        from memoria.core.memory.models.memory import MemoryRecord
         from memoria.core.memory.types import TrustTier
 
         db = self._db_factory()

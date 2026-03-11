@@ -1,7 +1,6 @@
 """Unit tests for GovernanceScheduler — frequency-separated governance."""
 
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 

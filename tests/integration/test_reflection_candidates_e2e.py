@@ -10,7 +10,6 @@ Verifies:
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from tests.conftest import TEST_EMBEDDING_DIM
 from memoria.core.memory.models.memory import MemoryRecord
