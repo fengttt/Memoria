@@ -37,21 +37,49 @@ curl -X DELETE https://memoria-host:8100/auth/keys/KEY_ID \
 
 ## For AI Assistants (MCP)
 
-Add Memoria as an MCP server in your assistant's config. No installation needed — just a JSON block.
+Install the package, then add Memoria as an MCP server in your assistant's config.
 
-### Claude Desktop
+### Install
 
-Edit `claude_desktop_config.json`:
+```bash
+pip install memoria
+# With embedding support (choose one):
+pip install "memoria[openai-embedding]"   # OpenAI / SiliconFlow / any OpenAI-compatible endpoint
+pip install "memoria[local-embedding]"    # Local sentence-transformers (~900MB download)
+```
+
+### Start the MCP server
+
+`memoria-mcp` supports two modes selected by whether `--api-url` is provided:
+
+**Embedded mode** — direct DB access, no separate server needed:
+```bash
+memoria-mcp --db-url "mysql+pymysql://root:111@localhost:6001/memoria" --user alice
+```
+
+**Remote mode** — proxy to a deployed Memoria REST API:
+```bash
+memoria-mcp --api-url "https://memoria-host:8100" --token "sk-your-key..."
+```
+
+All options:
+```
+--api-url   Memory service URL (enables remote mode)
+--token     API key for remote mode
+--db-url    Database URL for embedded mode (or set MEMORIA_DB_URL env var)
+--user      Default user ID (default: "default")
+--transport stdio | sse  (default: stdio)
+```
+
+### Kiro
+
+`.kiro/settings/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "memory": {
-      "command": "python",
-      "args": [
-        "-m", "memoria.mcp.server",
-        "--api-url", "https://memoria-host:8100",
-        "--api-key", "sk-your-key..."
-      ]
+    "memoria": {
+      "command": "memoria-mcp",
+      "args": ["--api-url", "https://memoria-host:8100", "--token", "sk-your-key..."]
     }
   }
 }
@@ -59,17 +87,27 @@ Edit `claude_desktop_config.json`:
 
 ### Cursor
 
-Edit `.cursor/mcp.json`:
+`.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "memory": {
-      "command": "python",
-      "args": [
-        "-m", "memoria.mcp.server",
-        "--api-url", "https://memoria-host:8100",
-        "--api-key", "sk-your-key..."
-      ]
+    "memoria": {
+      "command": "memoria-mcp",
+      "args": ["--api-url", "https://memoria-host:8100", "--token", "sk-your-key..."]
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+`claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "memoria": {
+      "command": "memoria-mcp",
+      "args": ["--api-url", "https://memoria-host:8100", "--token", "sk-your-key..."]
     }
   }
 }
@@ -77,7 +115,7 @@ Edit `.cursor/mcp.json`:
 
 ### Available MCP Tools
 
-Once connected, your AI assistant can use these 11 tools:
+Once connected, your AI assistant can use these tools:
 
 | Tool | Description |
 |------|-------------|
@@ -85,14 +123,23 @@ Once connected, your AI assistant can use these 11 tools:
 | `memory_retrieve` | Retrieve relevant memories for a query |
 | `memory_search` | Semantic search over all memories |
 | `memory_correct` | Correct an existing memory (by ID or semantic search) |
-| `memory_purge` | Delete a memory |
-| `memory_profile` | Get memory profile and stats |
-| `memory_snapshot` | Create a read-only snapshot |
+| `memory_purge` | Delete a memory or bulk-delete by topic |
+| `memory_profile` | Get memory-derived profile summary |
+| `memory_snapshot` | Create a named snapshot |
 | `memory_snapshots` | List all snapshots |
-| `memory_snapshot_diff` | Compare snapshot with current state |
+| `memory_rollback` | Restore to a previous snapshot |
+| `memory_branch` | Create an isolated memory branch |
+| `memory_checkout` | Switch to a branch |
+| `memory_diff` | Preview changes before merging a branch |
+| `memory_merge` | Merge a branch back into main |
+| `memory_branch_delete` | Delete a branch |
+| `memory_branches` | List all branches |
+| `memory_extract_entities` | Extract named entities and build entity graph (proactive) |
+| `memory_link_entities` | Write entity links from your own extraction results |
 | `memory_consolidate` | Detect contradictions, fix orphans (30min cooldown) |
 | `memory_reflect` | Synthesize insights from memory clusters (2h cooldown) |
-| `memory_extract_entities` | LLM entity extraction — build entity graph (manual trigger) |
+| `memory_governance` | Clean stale/low-confidence memories (1h cooldown) |
+| `memory_rebuild_index` | Rebuild vector index (only when governance reports needed) |
 
 ---
 

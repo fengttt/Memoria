@@ -1218,6 +1218,11 @@ def create_server(backend: MemoryBackend, default_user: str = "default") -> Fast
         import json
         return json.dumps(obj, ensure_ascii=False)
 
+    def _with_warning(msg: str, result: dict) -> str:
+        """Append warning from backend result dict to a tool response string."""
+        w = result.get("warning")
+        return f"{msg}\n⚠️ {w}" if w else msg
+
     @server.tool()
     def memory_store(
         content: str,
@@ -1234,7 +1239,7 @@ def create_server(backend: MemoryBackend, default_user: str = "default") -> Fast
             session_id: Session context (optional).
         """
         result = backend.store(_user(user_id), content, memory_type, session_id)
-        return f"Stored memory {result['memory_id']}: {result['content']}"
+        return _with_warning(f"Stored memory {result['memory_id']}: {result['content']}", result)
 
     @server.tool()
     def memory_retrieve(
@@ -1294,11 +1299,13 @@ def create_server(backend: MemoryBackend, default_user: str = "default") -> Fast
             if result.get("error") == "no_match":
                 return result["message"]
             matched = result.get("matched_content", "")
-            return f"Found '{matched}' → corrected to {result['memory_id']}: {result['content']}"
-        if not memory_id:
+            msg = f"Found '{matched}' → corrected to {result['memory_id']}: {result['content']}"
+        elif not memory_id:
             return "Provide either memory_id or query."
-        result = backend.correct(uid, memory_id, new_content, reason)
-        return f"Corrected → {result['memory_id']}: {result['content']}"
+        else:
+            result = backend.correct(uid, memory_id, new_content, reason)
+            msg = f"Corrected → {result['memory_id']}: {result['content']}"
+        return _with_warning(msg, result)
 
     @server.tool()
     def memory_purge(

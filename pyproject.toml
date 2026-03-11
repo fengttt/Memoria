@@ -20,6 +20,7 @@ dependencies = [
     "python-dotenv>=1.0.0,<2.0.0",
     "httpx>=0.27.0,<0.28.0",
     "matrixone-python-sdk>=0.1.16",
+    "openai>=1.0.0,<2.0.0",
     "mcp>=1.26.0,<2.0.0",
     "cryptography>=41.0.0",
     "uuid-utils>=0.10.0",
@@ -39,8 +40,15 @@ dev = [
     "pytest-cov>=4.1.0",
 ]
 
+[project.scripts]
+memoria = "memoria.cli:main"
+memoria-mcp = "memoria.mcp_local.server:main"
+
 [tool.setuptools.packages.find]
 include = ["memoria*"]
+
+[tool.setuptools.package-data]
+memoria = ["templates/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["memoria/tests", "tests"]

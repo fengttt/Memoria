@@ -40,7 +40,7 @@ These values get written into the `env` block of `mcp.json` automatically — no
 
 **If user chooses local embedding, explicitly warn**: "This will download ~900MB. If you're on a slow or proxied network, consider using an OpenAI-compatible service instead. Proceed?"
 
-**After collecting embedding config, remind user**: "Once your AI tool starts, the database tables will be created with this embedding dimension. Changing it later requires running `memoria migrate --force` (which clears existing embeddings) and re-embedding all memories via `memoria governance`. Make sure this configuration is correct before proceeding."
+**After collecting embedding config, remind user**: "Once your AI tool starts, the database tables will be created with this embedding dimension. Changing it later requires re-creating the embedding column (destructive). Make sure this configuration is correct before proceeding."
 
 ## Execution Rules
 
@@ -77,9 +77,9 @@ source .venv/bin/activate
 ```bash
 # Step 5: Install Memoria (run alone)
 # If using local embedding:
-pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ 'memoria-lite[local-embedding]'
+pip install 'memoria[local-embedding]'
 # If using an existing embedding service (no 900MB download):
-pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ memoria-lite
+pip install memoria
 ```
 ```bash
 # Step 6: Configure (in user's project directory)
@@ -109,9 +109,9 @@ source .venv/bin/activate
 ```
 ```bash
 # 4. Install
-pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ 'memoria-lite[local-embedding]'
+pip install 'memoria[local-embedding]'
 # or, if using an existing embedding service:
-# pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ memoria-lite
+# pip install memoria
 ```
 ```bash
 # 5. Configure with cloud URL
@@ -131,9 +131,9 @@ source .venv/bin/activate
 ```
 ```bash
 # 2. Install
-pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ 'memoria-lite[local-embedding]'
+pip install 'memoria[local-embedding]'
 # or, if using an existing embedding service:
-# pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ memoria-lite
+# pip install memoria
 ```
 ```bash
 # 3. Configure with existing DB
@@ -161,10 +161,9 @@ memoria init \
   --embedding-dim 1024
 ```
 
-The resulting `mcp.json` `env` block will contain all configurable variables (even if empty):
+The resulting `mcp.json` `env` block will contain the configured variables:
 ```json
 {
-  "MEMORIA_DB_URL": "...",
   "EMBEDDING_PROVIDER": "openai",
   "EMBEDDING_BASE_URL": "https://api.siliconflow.cn/v1",
   "EMBEDDING_API_KEY": "sk-...",
@@ -172,8 +171,6 @@ The resulting `mcp.json` `env` block will contain all configurable variables (ev
   "EMBEDDING_DIM": "1024"
 }
 ```
-
-Empty values (e.g. `""`) are treated as "not set" — the MCP server uses defaults (local embedding, dim=384).
 
 ## After any path
 

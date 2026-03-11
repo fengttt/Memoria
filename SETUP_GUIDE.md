@@ -187,7 +187,7 @@ python3 -m venv .venv && source .venv/bin/activate
 Then install:
 ```bash
 # Install with local embedding support (recommended)
-pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ 'memoria-lite[local-embedding]'
+pip install 'memoria[local-embedding]'
 ```
 
 **Important notes about local embedding:**
@@ -197,7 +197,7 @@ pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.
 
 If user does NOT want local embedding (e.g. wants to use OpenAI instead):
 ```bash
-pip install --index-url https://pypi.org/simple/ --extra-index-url https://test.pypi.org/simple/ memoria-lite
+pip install memoria
 ```
 
 ## Step 4: Initialize for the User's AI Tool
@@ -250,7 +250,7 @@ memoria init --embedding-provider openai --embedding-api-key sk-...
 memoria status
 
 # Test that MCP server can start
-python -m mo_memory_mcp
+memoria-mcp --db-url "mysql+pymysql://root:111@localhost:6001/memoria"
 # (Ctrl+C to stop after confirming it starts without errors)
 ```
 
@@ -278,17 +278,17 @@ memoria init
 
 ### "sentence-transformers not installed"
 ```bash
-pip install 'memoria-lite[local-embedding]'
+pip install 'memoria[local-embedding]'
 ```
 
 ### AI tool doesn't use memory after setup
 1. Run `memoria status` to verify config files exist
 2. Make sure the AI tool was restarted after `memoria init`
-3. Check MCP server starts: `python -m mo_memory_mcp`
+3. Check MCP server starts: `memoria-mcp --db-url "mysql+pymysql://root:111@localhost:6001/memoria"`
 
 ### Update rules after upgrading Memoria
 ```bash
-pip install --upgrade memoria-lite
+pip install --upgrade memoria
 memoria update-rules
 # Restart AI tool
 ```
