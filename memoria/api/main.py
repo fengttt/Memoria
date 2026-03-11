@@ -38,8 +38,7 @@ async def lifespan(app: FastAPI):
     from memoria.config import get_settings
     import logging
 
-    warning = get_settings().warn_weak_master_key()
-    if warning:
+    for warning in get_settings().warn_weak_master_key():
         logging.getLogger("memoria").warning(warning)
 
     init_db()

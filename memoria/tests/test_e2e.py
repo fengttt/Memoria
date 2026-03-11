@@ -145,6 +145,213 @@ class TestAuth:
         assert len(keys) >= 1
         assert any(k["key_id"] == kid for k in keys)
 
+    def test_list_keys_all_fields(self, client, db):
+        """GET /auth/keys returns expires_at and last_used_at fields."""
+        uid, h, kid = _make_user(client)
+        # Use the key so last_used_at gets set
+        client.get("/v1/memories", headers=h)
+
+        r = client.get("/auth/keys", headers=h)
+        assert r.status_code == 200
+        key = next(k for k in r.json() if k["key_id"] == kid)
+        assert "expires_at" in key
+        assert "last_used_at" in key
+        assert "key_prefix" in key
+        assert "created_at" in key
+        # last_used_at should now be set
+        assert key["last_used_at"] is not None
+
+        # DB ground truth
+        row = db.execute(
+            text(
+                "SELECT key_prefix, expires_at, last_used_at FROM auth_api_keys WHERE key_id = :kid"
+            ),
+            {"kid": kid},
+        ).first()
+        assert row[0] == key["key_prefix"]
+        assert row[2] is not None  # last_used_at set in DB
+
+    def test_create_key_with_expires_at(self, client, db):
+        """POST /auth/keys with expires_at stores it in DB."""
+        uid = f"e2e_{uuid.uuid4().hex[:8]}"
+        r = client.post(
+            "/auth/keys",
+            json={
+                "user_id": uid,
+                "name": "expiring-key",
+                "expires_at": "2099-12-31T00:00:00",
+            },
+            headers={"Authorization": f"Bearer {MASTER_KEY}"},
+        )
+        assert r.status_code == 201
+        data = r.json()
+        assert data["expires_at"] is not None
+        assert "2099" in data["expires_at"]
+
+        # DB ground truth
+        row = db.execute(
+            text("SELECT expires_at FROM auth_api_keys WHERE key_id = :kid"),
+            {"kid": data["key_id"]},
+        ).first()
+        assert row[0] is not None
+        assert row[0].year == 2099
+
+    def test_get_key_by_id(self, client, db):
+        """GET /auth/keys/{key_id} returns full key details."""
+        uid, h, kid = _make_user(client)
+        r = client.get(f"/auth/keys/{kid}", headers=h)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["key_id"] == kid
+        assert data["user_id"] == uid
+        assert "name" in data
+        assert "key_prefix" in data
+        assert "created_at" in data
+        assert "expires_at" in data
+        assert "last_used_at" in data
+        # raw_key must NOT be returned on GET
+        assert data.get("raw_key") is None
+
+        # DB ground truth
+        row = db.execute(
+            text(
+                "SELECT user_id, key_prefix, is_active FROM auth_api_keys WHERE key_id = :kid"
+            ),
+            {"kid": kid},
+        ).first()
+        assert row[0] == uid
+        assert row[1] == data["key_prefix"]
+        assert row[2] == 1
+
+    def test_get_key_not_found(self, client, user_key):
+        """GET /auth/keys/{key_id} returns 404 for unknown key."""
+        _, h = user_key
+        r = client.get("/auth/keys/nonexistent-key-id", headers=h)
+        assert r.status_code == 404
+
+    def test_get_key_wrong_user_rejected(self, client):
+        """GET /auth/keys/{key_id} returns 403 when key belongs to another user."""
+        _, h_a, kid_a = _make_user(client)
+        _, h_b, _ = _make_user(client)
+        r = client.get(f"/auth/keys/{kid_a}", headers=h_b)
+        assert r.status_code in (403, 404)
+
+    def test_rotate_key(self, client, db):
+        """PUT /auth/keys/{key_id}/rotate revokes old key and issues new one atomically."""
+        uid, h, kid = _make_user(client)
+
+        # Old key works
+        assert client.get("/v1/memories", headers=h).status_code == 200
+
+        r = client.put(f"/auth/keys/{kid}/rotate", headers=h)
+        assert r.status_code == 201
+        new_data = r.json()
+        assert new_data["key_id"] != kid
+        assert new_data["user_id"] == uid
+        assert new_data["raw_key"] is not None
+        assert new_data["raw_key"].startswith("sk-")
+        assert "expires_at" in new_data
+        assert "last_used_at" in new_data
+
+        # DB: old key deactivated
+        old_row = db.execute(
+            text("SELECT is_active FROM auth_api_keys WHERE key_id = :kid"),
+            {"kid": kid},
+        ).first()
+        assert old_row[0] == 0
+
+        # DB: new key active
+        new_row = db.execute(
+            text(
+                "SELECT is_active, user_id, key_hash FROM auth_api_keys WHERE key_id = :kid"
+            ),
+            {"kid": new_data["key_id"]},
+        ).first()
+        assert new_row[0] == 1
+        assert new_row[1] == uid
+        assert new_row[2] is not None  # hash stored
+
+        # Old key rejected
+        assert client.get("/v1/memories", headers=h).status_code == 401
+
+        # New key works
+        new_h = {"Authorization": f"Bearer {new_data['raw_key']}"}
+        assert client.get("/v1/memories", headers=new_h).status_code == 200
+
+    def test_rotate_key_preserves_name_and_expiry(self, client, db):
+        """Rotated key inherits name and expires_at from original."""
+        uid = f"e2e_{uuid.uuid4().hex[:8]}"
+        r = client.post(
+            "/auth/keys",
+            json={
+                "user_id": uid,
+                "name": "my-named-key",
+                "expires_at": "2099-06-15T00:00:00",
+            },
+            headers={"Authorization": f"Bearer {MASTER_KEY}"},
+        )
+        kid = r.json()["key_id"]
+        raw = r.json()["raw_key"]
+        h = {"Authorization": f"Bearer {raw}"}
+
+        rot = client.put(f"/auth/keys/{kid}/rotate", headers=h)
+        assert rot.status_code == 201
+        assert rot.json()["name"] == "my-named-key"
+        assert "2099" in rot.json()["expires_at"]
+
+    def test_rotate_nonexistent_key(self, client, user_key):
+        """Rotate on unknown key_id returns 404."""
+        _, h = user_key
+        r = client.put("/auth/keys/nonexistent/rotate", headers=h)
+        assert r.status_code == 404
+
+    def test_rotate_wrong_user_rejected(self, client):
+        """User B cannot rotate User A's key."""
+        _, h_a, kid_a = _make_user(client)
+        _, h_b, _ = _make_user(client)
+        r = client.put(f"/auth/keys/{kid_a}/rotate", headers=h_b)
+        assert r.status_code in (403, 404)
+
+    def test_api_key_secret_independent_of_master_key(self, client, db):
+        """API key hash uses API_KEY_SECRET, not MASTER_KEY — verify hash in DB."""
+        import hashlib
+        import hmac as _hmac
+
+        uid, h, kid = _make_user(client)
+
+        # Get the raw key from a fresh create
+        uid2 = f"e2e_{uuid.uuid4().hex[:8]}"
+        r = client.post(
+            "/auth/keys",
+            json={"user_id": uid2, "name": "hash-test"},
+            headers={"Authorization": f"Bearer {MASTER_KEY}"},
+        )
+        raw_key = r.json()["raw_key"]
+        kid2 = r.json()["key_id"]
+
+        # Compute expected hash using API_KEY_SECRET (falls back to MASTER_KEY if not set)
+        from memoria.config import get_settings
+
+        s = get_settings()
+        secret = s.api_key_secret or s.master_key
+        if secret:
+            expected_hash = _hmac.new(
+                secret.encode(), raw_key.encode(), hashlib.sha256
+            ).hexdigest()
+        else:
+            expected_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+        # DB ground truth: stored hash must match
+        row = db.execute(
+            text("SELECT key_hash FROM auth_api_keys WHERE key_id = :kid"),
+            {"kid": kid2},
+        ).first()
+        assert row[0] == expected_hash
+
+        # Verify the key actually authenticates (hash lookup works)
+        h2 = {"Authorization": f"Bearer {raw_key}"}
+        assert client.get("/v1/memories", headers=h2).status_code == 200
+
 
 # ── Memory List ───────────────────────────────────────────────────────
 
@@ -880,6 +1087,96 @@ class TestAdmin:
         uid, _ = user_key
         r = client.post(f"/admin/governance/{uid}/trigger?op=invalid", headers=admin_h)
         assert r.status_code == 400
+
+    def test_admin_list_user_keys(self, client, db, admin_h):
+        """GET /admin/users/{user_id}/keys returns all active keys with full fields."""
+        uid, h, kid = _make_user(client)
+        # Create a second key for the same user
+        r2 = client.post(
+            "/auth/keys",
+            json={"user_id": uid, "name": "second-key"},
+            headers=admin_h,
+        )
+        assert r2.status_code == 201
+        kid2 = r2.json()["key_id"]
+
+        r = client.get(f"/admin/users/{uid}/keys", headers=admin_h)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["user_id"] == uid
+        keys = data["keys"]
+        assert len(keys) == 2
+        key_ids = {k["key_id"] for k in keys}
+        assert kid in key_ids
+        assert kid2 in key_ids
+
+        # All fields present on each key
+        for k in keys:
+            assert "key_id" in k
+            assert "user_id" in k
+            assert "name" in k
+            assert "key_prefix" in k
+            assert "created_at" in k
+            assert "expires_at" in k
+            assert "last_used_at" in k
+            assert k.get("raw_key") is None  # never returned on list
+            assert k["user_id"] == uid
+
+        # DB ground truth: both keys active
+        count = db.execute(
+            text(
+                "SELECT COUNT(*) FROM auth_api_keys WHERE user_id = :uid AND is_active"
+            ),
+            {"uid": uid},
+        ).scalar()
+        assert count == 2
+
+    def test_admin_list_user_keys_non_admin_rejected(self, client, user_key):
+        """Non-admin cannot access /admin/users/{user_id}/keys."""
+        uid, h = user_key
+        r = client.get(f"/admin/users/{uid}/keys", headers=h)
+        assert r.status_code == 403
+
+    def test_admin_list_user_keys_revoked_excluded(self, client, db, admin_h):
+        """Revoked keys are not returned in admin key list."""
+        uid, h, kid = _make_user(client)
+        client.delete(f"/auth/keys/{kid}", headers=h)
+
+        r = client.get(f"/admin/users/{uid}/keys", headers=admin_h)
+        assert r.status_code == 200
+        key_ids = {k["key_id"] for k in r.json()["keys"]}
+        assert kid not in key_ids
+
+    def test_admin_revoke_all_keys(self, client, db, admin_h):
+        """DELETE /admin/users/{user_id}/keys revokes all active keys."""
+        uid, h, _kid1 = _make_user(client)
+        client.post(
+            "/auth/keys",
+            json={"user_id": uid, "name": "key2"},
+            headers=admin_h,
+        )
+
+        r = client.delete(f"/admin/users/{uid}/keys", headers=admin_h)
+        assert r.status_code == 200
+        assert r.json()["revoked"] == 2
+        assert r.json()["user_id"] == uid
+
+        # DB: both keys deactivated
+        active = db.execute(
+            text(
+                "SELECT COUNT(*) FROM auth_api_keys WHERE user_id = :uid AND is_active"
+            ),
+            {"uid": uid},
+        ).scalar()
+        assert active == 0
+
+        # Both keys rejected
+        assert client.get("/v1/memories", headers=h).status_code == 401
+
+    def test_admin_revoke_all_keys_non_admin_rejected(self, client, user_key):
+        uid, h = user_key
+        r = client.delete(f"/admin/users/{uid}/keys", headers=h)
+        assert r.status_code == 403
 
 
 # ── Rate Limiting ─────────────────────────────────────────────────────

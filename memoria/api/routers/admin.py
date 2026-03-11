@@ -82,6 +82,35 @@ def user_stats(
     }
 
 
+@router.get("/admin/users/{user_id}/keys")
+def list_user_keys(
+    user_id: str,
+    _admin: str = Depends(require_admin),
+    db: Session = Depends(get_db_session),
+):
+    """List all active API keys for a user (admin only)."""
+    from memoria.api.routers.auth import _key_to_response
+
+    rows = db.query(ApiKey).filter_by(user_id=user_id, is_active=1).all()
+    return {"user_id": user_id, "keys": [_key_to_response(r) for r in rows]}
+
+
+@router.delete("/admin/users/{user_id}/keys")
+def revoke_all_user_keys(
+    user_id: str,
+    _admin: str = Depends(require_admin),
+    db: Session = Depends(get_db_session),
+):
+    """Revoke all active API keys for a user (admin only)."""
+    result = (
+        db.query(ApiKey)
+        .filter_by(user_id=user_id, is_active=1)
+        .update({"is_active": 0})
+    )
+    db.commit()
+    return {"user_id": user_id, "revoked": result}
+
+
 @router.delete("/admin/users/{user_id}")
 def delete_user(
     user_id: str,

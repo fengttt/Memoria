@@ -15,6 +15,8 @@ from memoria.config import get_settings
 
 security = HTTPBearer()
 
+ADMIN_USER_ID = "__admin__"
+
 
 def get_current_user_id(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -26,7 +28,7 @@ def get_current_user_id(
 
     # Master key → admin user (timing-safe comparison)
     if settings.master_key and hmac.compare_digest(token, settings.master_key):
-        return "__admin__"
+        return ADMIN_USER_ID
 
     key_hash = ApiKey.hash_key(token)
     row = (
@@ -69,7 +71,7 @@ def get_current_user_id(
 
 def require_admin(user_id: str = Depends(get_current_user_id)) -> str:
     """Require admin (master key) access."""
-    if user_id != "__admin__":
+    if user_id != ADMIN_USER_ID:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
         )

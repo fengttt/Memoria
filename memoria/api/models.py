@@ -54,13 +54,19 @@ class ApiKey(Base):
 
     @staticmethod
     def _hmac_hash(raw: str) -> str:
-        """HMAC-SHA256 keyed with master key. Falls back to bare SHA-256 if no master key."""
+        """HMAC-SHA256 keyed with api_key_secret (preferred) or master_key (fallback).
+
+        Uses a dedicated secret so that rotating the master key does not
+        invalidate every existing API key hash.
+        """
         import hmac as _hmac
+
         from memoria.config import get_settings
 
-        mk = get_settings().master_key
-        if mk:
-            return _hmac.new(mk.encode(), raw.encode(), hashlib.sha256).hexdigest()
+        s = get_settings()
+        secret = s.api_key_secret or s.master_key
+        if secret:
+            return _hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()
         return hashlib.sha256(raw.encode()).hexdigest()
 
 

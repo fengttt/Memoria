@@ -1,6 +1,13 @@
 .PHONY: help start stop logs status build test test-docker test-mcp test-all test-all-cov clean reset \
-        cloud-start cloud-stop cloud-logs cloud-status cloud-clean cloud-rebuild \
-        install dev build-wheel publish publish-test bump-version check lint type-check
+        cloud-start cloud-stop cloud-logs cloud-status cloud-health cloud-clean cloud-rebuild \
+        install dev build-wheel publish publish-test bump-version check lint type-check \
+        new-key list-keys revoke-keys
+
+# Load environment variables from .env file if it exists
+ifneq (,$(wildcard .env))
+    include .env
+    export
+endif
 
 help:
 	@echo "Memoria — Multi-tenant memory service"
@@ -16,6 +23,7 @@ help:
 	@echo "  make cloud-stop         Alias for stop"
 	@echo "  make cloud-logs         Alias for logs"
 	@echo "  make cloud-status       Alias for status"
+	@echo "  make cloud-health       Check API health status"
 	@echo "  make cloud-rebuild      Rebuild + restart API container"
 	@echo "  make cloud-clean        Stop + remove all data"
 	@echo ""
@@ -43,6 +51,11 @@ help:
 	@echo "Maintenance:"
 	@echo "  make clean              Remove build artifacts"
 	@echo "  make reset              Stop + remove data + restart fresh"
+	@echo ""
+	@echo "API Keys (dev):"
+	@echo "  make new-key USER=alice NAME=dev-key   Create API key for user"
+	@echo "  make list-keys USER=alice              List active keys for user"
+	@echo "  make revoke-keys USER=alice            Revoke all keys for user"
 
 # ── Docker / Cloud ──────────────────────────────────────────────────
 
@@ -68,10 +81,104 @@ cloud-stop: stop
 cloud-logs: logs
 cloud-status: status
 
+cloud-health:
+	@echo "Checking Memoria API health..."
+	@API_PORT=$${API_PORT:-8100}; \
+	if curl -s --noproxy localhost http://localhost:$$API_PORT/health > /dev/null 2>&1; then \
+		curl -s --noproxy localhost http://localhost:$$API_PORT/health | python -m json.tool 2>/dev/null || curl -s --noproxy localhost http://localhost:$$API_PORT/health; \
+		echo ""; \
+	else \
+		echo "❌ API is not responding on port $$API_PORT"; \
+		echo "   Make sure the service is running: make cloud-start"; \
+		exit 1; \
+	fi
+
 cloud-rebuild:
 	@docker compose build api
 	@docker compose up -d api
 	@echo "API rebuilt and restarted"
+
+new-key:
+	@API_PORT=$${API_PORT:-8100}; \
+	USER=$${USER:-mo-developer}; \
+	NAME=$${NAME:-default}; \
+	MASTER_KEY=$${MEMORIA_MASTER_KEY:-test-master-key-for-docker-compose}; \
+	echo "Creating API key for user '$$USER' (name: $$NAME)..."; \
+	RESPONSE=$$(curl -s -w "\n%{http_code}" --noproxy localhost \
+		-X POST "http://localhost:$$API_PORT/auth/keys" \
+		-H "Authorization: Bearer $$MASTER_KEY" \
+		-H "Content-Type: application/json" \
+		-d "{\"user_id\": \"$$USER\", \"name\": \"$$NAME\"}" 2>/dev/null); \
+	HTTP_CODE=$$(echo "$$RESPONSE" | tail -n1); \
+	BODY=$$(echo "$$RESPONSE" | sed '$$d'); \
+	if [ "$$HTTP_CODE" = "201" ]; then \
+		echo "✅ API key created successfully!"; \
+		echo ""; \
+		echo "Raw Key:   $$(echo "$$BODY" | python -c "import sys,json; d=json.load(sys.stdin); print(d.get('raw_key','N/A'))" 2>/dev/null || echo "$$BODY")"; \
+		echo "Key ID:    $$(echo "$$BODY" | python -c "import sys,json; d=json.load(sys.stdin); print(d.get('key_id','N/A'))" 2>/dev/null)"; \
+		echo "User ID:   $$(echo "$$BODY" | python -c "import sys,json; d=json.load(sys.stdin); print(d.get('user_id','N/A'))" 2>/dev/null)"; \
+		echo "Name:      $$(echo "$$BODY" | python -c "import sys,json; d=json.load(sys.stdin); print(d.get('name','N/A'))" 2>/dev/null)"; \
+		echo "Prefix:    $$(echo "$$BODY" | python -c "import sys,json; d=json.load(sys.stdin); print(d.get('key_prefix','N/A'))" 2>/dev/null)"; \
+		echo ""; \
+		echo "⚠️  Save the raw key now - it won't be shown again!"; \
+	elif [ "$$HTTP_CODE" = "401" ]; then \
+		echo "❌ Authentication failed — check MEMORIA_MASTER_KEY"; \
+		exit 1; \
+	elif [ "$$HTTP_CODE" = "000" ]; then \
+		echo "❌ Cannot connect to API on port $$API_PORT — run: make start"; \
+		exit 1; \
+	else \
+		echo "❌ Failed to create API key (HTTP $$HTTP_CODE): $$BODY"; \
+		exit 1; \
+	fi
+
+list-keys:
+	@API_PORT=$${API_PORT:-8100}; \
+	USER=$${USER:-mo-developer}; \
+	MASTER_KEY=$${MEMORIA_MASTER_KEY:-test-master-key-for-docker-compose}; \
+	echo "Active API keys for user '$$USER':"; \
+	RESPONSE=$$(curl -s -w "\n%{http_code}" --noproxy localhost \
+		-X GET "http://localhost:$$API_PORT/admin/users/$$USER/keys" \
+		-H "Authorization: Bearer $$MASTER_KEY" 2>/dev/null); \
+	HTTP_CODE=$$(echo "$$RESPONSE" | tail -n1); \
+	BODY=$$(echo "$$RESPONSE" | sed '$$d'); \
+	if [ "$$HTTP_CODE" = "200" ]; then \
+		echo "$$BODY" | python -c \
+		'import sys,json; d=json.load(sys.stdin); keys=d.get("keys",[]); print("\n  %d key(s) found\n"%len(keys)); [print("  [%d] %s  (%s...)\n      key_id:     %s\n      created:    %s\n      expires:    %s\n      last_used:  %s\n"%(i+1,k["name"],k["key_prefix"],k["key_id"],k["created_at"][:19],k["expires_at"][:19] if k.get("expires_at") else "never",k["last_used_at"][:19] if k.get("last_used_at") else "never")) for i,k in enumerate(keys)]'; \
+	elif [ "$$HTTP_CODE" = "401" ] || [ "$$HTTP_CODE" = "403" ]; then \
+		echo "❌ Authentication failed — check MEMORIA_MASTER_KEY"; \
+		exit 1; \
+	elif [ "$$HTTP_CODE" = "000" ]; then \
+		echo "❌ Cannot connect to API on port $$API_PORT — run: make start"; \
+		exit 1; \
+	else \
+		echo "❌ Failed (HTTP $$HTTP_CODE): $$BODY"; \
+		exit 1; \
+	fi
+
+revoke-keys:
+	@API_PORT=$${API_PORT:-8100}; \
+	USER=$${USER:-mo-developer}; \
+	MASTER_KEY=$${MEMORIA_MASTER_KEY:-test-master-key-for-docker-compose}; \
+	echo "Revoking all API keys for user '$$USER'..."; \
+	RESPONSE=$$(curl -s -w "\n%{http_code}" --noproxy localhost \
+		-X DELETE "http://localhost:$$API_PORT/admin/users/$$USER/keys" \
+		-H "Authorization: Bearer $$MASTER_KEY" 2>/dev/null); \
+	HTTP_CODE=$$(echo "$$RESPONSE" | tail -n1); \
+	BODY=$$(echo "$$RESPONSE" | sed '$$d'); \
+	if [ "$$HTTP_CODE" = "200" ]; then \
+		REVOKED=$$(echo "$$BODY" | python -c "import sys,json; print(json.load(sys.stdin).get('revoked',0))" 2>/dev/null); \
+		echo "✅ Revoked $$REVOKED key(s) for user '$$USER'"; \
+	elif [ "$$HTTP_CODE" = "401" ] || [ "$$HTTP_CODE" = "403" ]; then \
+		echo "❌ Authentication failed — check MEMORIA_MASTER_KEY"; \
+		exit 1; \
+	elif [ "$$HTTP_CODE" = "000" ]; then \
+		echo "❌ Cannot connect to API on port $$API_PORT — run: make start"; \
+		exit 1; \
+	else \
+		echo "❌ Failed (HTTP $$HTTP_CODE): $$BODY"; \
+		exit 1; \
+	fi
 
 cloud-clean:
 	@docker compose down

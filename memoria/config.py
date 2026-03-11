@@ -63,6 +63,11 @@ class MemoriaSettings(BaseSettings):
         default="",
         description="Master API key for admin operations (min 16 chars in production)",
     )
+    api_key_secret: str = Field(
+        default="",
+        description="Dedicated HMAC secret for API key hashing. "
+        "If empty, falls back to master_key for backward compatibility.",
+    )
 
     # LLM (optional — for reflect + entity extraction)
     llm_api_key: str = ""
@@ -80,11 +85,19 @@ class MemoriaSettings(BaseSettings):
             "?charset=utf8mb4"
         )
 
-    def warn_weak_master_key(self) -> str | None:
-        """Return warning message if master_key is set but too short."""
+    def warn_weak_master_key(self) -> list[str]:
+        """Return warning messages about auth configuration issues."""
+        warnings: list[str] = []
         if self.master_key and len(self.master_key) < 16:
-            return f"MEMORIA_MASTER_KEY is only {len(self.master_key)} chars — use ≥16 chars in production"
-        return None
+            warnings.append(
+                f"MEMORIA_MASTER_KEY is only {len(self.master_key)} chars — use ≥16 chars in production"
+            )
+        if self.master_key and not self.api_key_secret:
+            warnings.append(
+                "MEMORIA_API_KEY_SECRET is not set — API key hashing falls back to MASTER_KEY. "
+                "Set API_KEY_SECRET so you can rotate MASTER_KEY without invalidating existing keys."
+            )
+        return warnings
 
 
 _settings: MemoriaSettings | None = None
