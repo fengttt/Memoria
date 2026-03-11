@@ -39,6 +39,9 @@ class MemoryBackend:
     def consolidate(self, user_id: str, force: bool = False) -> dict: ...
     def reflect(self, user_id: str, force: bool = False) -> dict: ...
     def extract_entities(self, user_id: str) -> dict: ...
+    def get_reflect_candidates(self, user_id: str) -> dict: ...
+    def get_entity_candidates(self, user_id: str) -> dict: ...
+    def link_entities(self, user_id: str, entities: list[dict]) -> dict: ...
     def rebuild_index(self, table: str) -> str: ...
     def health_warnings(self, user_id: str) -> list[str]: ...
     # Branching
@@ -344,6 +347,77 @@ class EmbeddedBackend(MemoryBackend):
             return svc.extract_entities_llm(user_id, llm)
         except Exception as e:
             return {"total_memories": 0, "entities_found": 0, "edges_created": 0, "error": str(e)}
+
+    def get_reflect_candidates(self, user_id: str) -> dict:
+        """Return raw reflection candidates for user-LLM synthesis (no internal LLM)."""
+        from memoria.core.memory.graph.candidates import GraphCandidateProvider
+        provider = GraphCandidateProvider(self._db_factory)
+        candidates = provider.get_reflection_candidates(user_id)
+        if not candidates:
+            return {"candidates": []}
+        clusters = []
+        for c in candidates:
+            clusters.append({
+                "signal": c.signal,
+                "importance": round(c.importance_score, 3),
+                "memories": [{"memory_id": m.memory_id, "content": m.content, "type": str(m.memory_type)} for m in c.memories],
+            })
+        return {"candidates": clusters}
+
+    def get_entity_candidates(self, user_id: str) -> dict:
+        """Return unlinked memories for user-LLM entity extraction (no internal LLM)."""
+        from memoria.core.memory.graph.graph_store import GraphStore
+        from memoria.core.memory.graph.types import EdgeType, NodeType
+        store = GraphStore(self._db_factory)
+        semantic_nodes = store.get_user_nodes(user_id, node_type=NodeType.SEMANTIC, active_only=True, load_embedding=False)
+        if not semantic_nodes:
+            return {"memories": []}
+        node_ids = {n.node_id for n in semantic_nodes}
+        existing_edges = store.get_edges_for_nodes(node_ids)
+        linked_ids = {nid for nid, edges in existing_edges.items() if any(e.edge_type == EdgeType.ENTITY_LINK.value for e in edges)}
+        unlinked = [n for n in semantic_nodes if n.node_id not in linked_ids]
+        return {"memories": [{"memory_id": n.memory_id or n.node_id, "content": n.content} for n in unlinked[:50]]}
+
+    def link_entities(self, user_id: str, entities: list[dict]) -> dict:
+        """Write entity nodes + edges from user-LLM extraction results.
+
+        Args:
+            entities: [{"memory_id": "...", "entities": [{"name": "...", "type": "..."}]}]
+        """
+        from memoria.core.memory.graph.graph_store import GraphStore, _new_id
+        from memoria.core.memory.graph.types import EdgeType, GraphNodeData, NodeType
+        store = GraphStore(self._db_factory)
+        entity_cache: dict[str, str] = {}
+        pending_edges: list[tuple[str, str, str, float]] = []
+        entities_created = 0
+        for item in entities:
+            memory_id = item.get("memory_id", "")
+            # Resolve memory_id → node_id
+            node = store.get_node_by_memory_id(memory_id)
+            if not node:
+                continue
+            for ent in item.get("entities", []):
+                name = str(ent.get("name", "")).strip().lower()
+                if not name:
+                    continue
+                ent_node_id = entity_cache.get(name)
+                if not ent_node_id:
+                    existing = store.find_entity_node(user_id, name)
+                    if existing:
+                        ent_node_id = existing.node_id
+                    else:
+                        ent_node_id = _new_id()
+                        store.create_node(GraphNodeData(
+                            node_id=ent_node_id, user_id=user_id,
+                            node_type=NodeType.ENTITY, content=name,
+                            confidence=1.0, trust_tier="T1", importance=0.4,
+                        ))
+                        entities_created += 1
+                    entity_cache[name] = ent_node_id
+                pending_edges.append((node.node_id, ent_node_id, EdgeType.ENTITY_LINK.value, 1.0))
+        if pending_edges:
+            store.add_edges_batch(pending_edges, user_id)
+        return {"entities_created": entities_created, "edges_created": len(pending_edges)}
 
     # ── Branching ─────────────────────────────────────────────────────
 
@@ -1062,6 +1136,21 @@ class HTTPBackend(MemoryBackend):
         r.raise_for_status()
         return r.json()
 
+    def get_reflect_candidates(self, user_id: str) -> dict:
+        r = self._client.post("/v1/reflect/candidates")
+        r.raise_for_status()
+        return r.json()
+
+    def get_entity_candidates(self, user_id: str) -> dict:
+        r = self._client.post("/v1/extract-entities/candidates")
+        r.raise_for_status()
+        return r.json()
+
+    def link_entities(self, user_id: str, entities: list[dict]) -> dict:
+        r = self._client.post("/v1/extract-entities/link", json={"entities": entities})
+        r.raise_for_status()
+        return r.json()
+
     def rebuild_index(self, table: str) -> str:
         r = self._client.post("/v1/memories/rebuild-index", json={"table": table})
         r.raise_for_status()
@@ -1123,6 +1212,11 @@ def create_server(backend: MemoryBackend, default_user: str = "default") -> Fast
 
     def _user(user_id: str | None) -> str:
         return user_id or default_user
+
+    def _has_internal_llm() -> bool:
+        """Check if Memoria has its own LLM configured."""
+        from memoria.core.llm import get_llm_client
+        return get_llm_client() is not None
 
     @server.tool()
     def memory_store(
@@ -1313,19 +1407,38 @@ def create_server(backend: MemoryBackend, default_user: str = "default") -> Fast
     def memory_reflect(
         user_id: str | None = None,
         force: bool = False,
+        mode: str = "auto",
     ) -> str:
-        """Analyze memory clusters and synthesize high-level insights (scene nodes). Requires LLM.
+        """Analyze memory clusters and synthesize high-level insights (scene nodes).
 
         Do NOT call proactively. Only call when user explicitly asks to
         "reflect on memories", "find patterns", or "summarize what you know".
         Has a 2-hour cooldown per user. Use force=True only if user insists.
-        This is the most expensive operation (LLM calls).
 
         Args:
             user_id: User ID (optional).
             force: Skip cooldown (only when user explicitly requests).
+            mode: 'auto' (use internal LLM if configured, else return candidates),
+                  'internal' (use Memoria's LLM — fails if not configured),
+                  'candidates' (return raw memory clusters for YOU to synthesize,
+                  then store insights via memory_store with trust_tier='T4').
         """
-        result = backend.reflect(_user(user_id), force=force)
+        uid = _user(user_id)
+        if mode == "candidates" or (mode == "auto" and not _has_internal_llm()):
+            result = backend.get_reflect_candidates(uid)
+            clusters = result.get("candidates", [])
+            if not clusters:
+                return "No reflection candidates found — not enough cross-session memory patterns yet."
+            parts = []
+            for i, c in enumerate(clusters, 1):
+                mems = "\n".join(f"  - [{m['type']}] {m['content']}" for m in c["memories"])
+                parts.append(f"Cluster {i} ({c['signal']}, importance={c['importance']}):\n{mems}")
+            return (
+                "Here are memory clusters for reflection. Synthesize 1-2 insights per cluster, "
+                "then store each via memory_store(content=..., memory_type='semantic').\n\n"
+                + "\n\n".join(parts)
+            )
+        result = backend.reflect(uid, force=force)
         if result.get("skipped"):
             return f"Reflection skipped (cooldown, {result['cooldown_remaining_s']}s remaining)."
         if "error" in result:
@@ -1335,22 +1448,70 @@ def create_server(backend: MemoryBackend, default_user: str = "default") -> Fast
     @server.tool()
     def memory_extract_entities(
         user_id: str | None = None,
+        mode: str = "auto",
     ) -> str:
-        """Extract named entities from memories using LLM and build entity graph.
+        """Extract named entities from memories and build entity graph.
 
         Only call when user explicitly asks to "extract entities", "build entity graph",
-        or "link entities". Requires LLM. Processes only unlinked memories (idempotent).
+        or "link entities". Processes only unlinked memories (idempotent).
+
+        Lightweight regex extraction runs automatically on every memory store.
+        This tool adds deeper extraction via LLM.
 
         Args:
             user_id: User ID (optional).
+            mode: 'auto' (use internal LLM if configured, else return candidates),
+                  'internal' (use Memoria's LLM — fails if not configured),
+                  'candidates' (return unlinked memories for YOU to extract entities from,
+                  then call memory_link_entities with the results).
         """
-        result = backend.extract_entities(_user(user_id))
+        uid = _user(user_id)
+        if mode == "candidates" or (mode == "auto" and not _has_internal_llm()):
+            result = backend.get_entity_candidates(uid)
+            memories = result.get("memories", [])
+            if not memories:
+                return "No unlinked memories found — all memories already have entity links."
+            lines = [f"- [{m['memory_id']}] {m['content']}" for m in memories]
+            return (
+                f"Found {len(memories)} memories without entity links. "
+                "Extract named entities (people, tech, projects, repos) from each, "
+                "then call memory_link_entities with the results.\n\n"
+                + "\n".join(lines)
+            )
+        result = backend.extract_entities(uid)
         if "error" in result:
             return f"Entity extraction failed: {result['error']}"
         return (
             f"Entity extraction done: {result['total_memories']} memories processed, "
             f"{result['entities_found']} entities found, {result['edges_created']} edges created."
         )
+
+    @server.tool()
+    def memory_link_entities(
+        entities: str,
+        user_id: str | None = None,
+    ) -> str:
+        """Write entity links from user-LLM extraction results.
+
+        Call this after memory_extract_entities(mode='candidates') returns memories.
+        You extract entities from each memory, then pass them here.
+
+        Args:
+            entities: JSON string: [{"memory_id": "...", "entities": [{"name": "python", "type": "tech"}]}]
+            user_id: User ID (optional).
+        """
+        import json as _json
+        try:
+            parsed = _json.loads(entities)
+        except (ValueError, TypeError):
+            return "Invalid JSON. Expected: [{\"memory_id\": \"...\", \"entities\": [{\"name\": \"...\", \"type\": \"...\"}]}]"
+        if not isinstance(parsed, list) or not all(isinstance(x, dict) and "memory_id" in x for x in parsed):
+            return "Invalid format. Expected: [{\"memory_id\": \"...\", \"entities\": [{\"name\": \"...\", \"type\": \"...\"}]}]"
+        try:
+            result = backend.link_entities(_user(user_id), parsed)
+        except Exception as e:
+            return f"Entity linking failed: {e}"
+        return f"Linked: {result['entities_created']} new entities, {result['edges_created']} edges created."
 
     @server.tool()
     def memory_rebuild_index(

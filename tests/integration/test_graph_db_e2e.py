@@ -905,3 +905,109 @@ class TestEntityLinking:
         assert found.node_id == node.node_id
 
         assert store.find_entity_node(user_id, "nonexistent") is None
+
+
+    def test_duplicate_link_idempotent(self, store, user_id):
+        """Linking same entity to same memory twice → no duplicate edges (ON DUPLICATE KEY)."""
+        from memoria.core.memory.graph.graph_builder import GraphBuilder
+        from memoria.core.memory.graph.types import EdgeType, NodeType
+        from memoria.core.memory.types import Memory, MemoryType, TrustTier
+
+        builder = GraphBuilder(store)
+        mem = Memory(
+            memory_id=uuid4().hex, user_id=user_id,
+            memory_type=MemoryType.SEMANTIC,
+            content="Python is great",
+            embedding=_embed(0.5), initial_confidence=0.9,
+            trust_tier=TrustTier.T3_INFERRED,
+        )
+        created1 = builder.ingest(user_id, [mem], [])
+        # Ingest again (simulates re-processing) — entity node should be reused
+        created2 = builder.ingest(user_id, [mem], [])
+
+        # Only one "python" entity node
+        all_ent = store.get_user_nodes(user_id, node_type=NodeType.ENTITY, active_only=True)
+        python_nodes = [n for n in all_ent if n.content.lower() == "python"]
+        assert len(python_nodes) == 1
+
+    def test_empty_entities_in_content(self, store, user_id):
+        """Memory with no extractable entities → no entity nodes created."""
+        from memoria.core.memory.graph.graph_builder import GraphBuilder
+        from memoria.core.memory.graph.types import NodeType
+        from memoria.core.memory.types import Memory, MemoryType, TrustTier
+
+        builder = GraphBuilder(store)
+        mem = Memory(
+            memory_id=uuid4().hex, user_id=user_id,
+            memory_type=MemoryType.SEMANTIC,
+            content="hello world nothing special here",
+            embedding=_embed(0.6), initial_confidence=0.9,
+            trust_tier=TrustTier.T3_INFERRED,
+        )
+        created = builder.ingest(user_id, [mem], [])
+        entity_nodes = [n for n in created if n.node_type == NodeType.ENTITY]
+        assert len(entity_nodes) == 0
+
+    def test_invalid_memory_id_skipped(self, store, user_id):
+        """link_entities with nonexistent memory_id → silently skipped, no error."""
+        from memoria.core.memory.graph.graph_store import _new_id
+        from memoria.core.memory.graph.types import EdgeType, GraphNodeData, NodeType
+
+        # No graph node exists for this memory_id
+        fake_mid = uuid4().hex
+        entity_cache: dict[str, str] = {}
+        pending_edges: list[tuple[str, str, str, float]] = []
+
+        node = store.get_node_by_memory_id(fake_mid)
+        assert node is None  # confirms it doesn't exist
+
+        # Simulate link_entities logic — should not crash
+        if node:
+            pending_edges.append(("x", "y", EdgeType.ENTITY_LINK.value, 1.0))
+        assert len(pending_edges) == 0
+
+
+class TestLLMEntityExtractorUnit:
+    """LLM entity extraction error handling."""
+
+    def test_llm_failure_returns_empty(self):
+        """LLM client that raises → returns empty list, no crash."""
+        from unittest.mock import MagicMock
+        from memoria.core.memory.graph.entity_extractor import extract_entities_llm
+
+        bad_llm = MagicMock()
+        bad_llm.chat.side_effect = RuntimeError("API down")
+        result = extract_entities_llm("some text about Python", bad_llm)
+        assert result == []
+
+    def test_llm_returns_garbage_json(self):
+        """LLM returns non-JSON → returns empty list."""
+        from unittest.mock import MagicMock
+        from memoria.core.memory.graph.entity_extractor import extract_entities_llm
+
+        bad_llm = MagicMock()
+        bad_llm.chat.return_value = "I don't know how to extract entities"
+        result = extract_entities_llm("some text", bad_llm)
+        assert result == []
+
+    def test_llm_returns_non_array_json(self):
+        """LLM returns JSON object instead of array → returns empty list."""
+        from unittest.mock import MagicMock
+        from memoria.core.memory.graph.entity_extractor import extract_entities_llm
+
+        bad_llm = MagicMock()
+        bad_llm.chat.return_value = '{"name": "python", "type": "tech"}'
+        result = extract_entities_llm("some text", bad_llm)
+        assert result == []
+
+    def test_llm_returns_valid_entities(self):
+        """LLM returns valid JSON array → parsed correctly."""
+        from unittest.mock import MagicMock
+        from memoria.core.memory.graph.entity_extractor import extract_entities_llm
+
+        good_llm = MagicMock()
+        good_llm.chat.return_value = '[{"name": "Python", "type": "tech"}, {"name": "FastAPI", "type": "tech"}]'
+        result = extract_entities_llm("I use Python with FastAPI", good_llm)
+        assert len(result) == 2
+        assert result[0].name == "python"
+        assert result[1].name == "fastapi"

@@ -87,7 +87,7 @@ def extract_entities_lightweight(text: str) -> list[ExtractedEntity]:
 
 _LLM_EXTRACT_PROMPT = """\
 Extract named entities from the following text. Return a JSON array of objects.
-Each object: {"name": "canonical name", "type": "tech|person|repo|project|concept"}
+Each object: {{"name": "canonical name", "type": "tech|person|repo|project|concept"}}
 
 Rules:
 - Only extract specific, named entities (not generic words)

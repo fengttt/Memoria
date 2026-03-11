@@ -102,11 +102,56 @@ def create_server(api_url: str, api_key: str) -> FastMCP:
         return str(r.json())
 
     @server.tool()
-    async def memory_reflect(force: bool = False) -> str:
-        """Analyze memory clusters and synthesize insights. 2h cooldown."""
+    async def memory_reflect(force: bool = False, mode: str = "auto") -> str:
+        """Analyze memory clusters and synthesize insights.
+
+        mode: 'auto' (internal LLM if available, else candidates), 'internal', 'candidates'.
+        In candidates mode, returns raw clusters for YOU to synthesize, then store via memory_store.
+        """
+        if mode == "candidates":
+            r = client.post("/v1/reflect/candidates")
+            r.raise_for_status()
+            data = r.json()
+            clusters = data.get("candidates", [])
+            if not clusters:
+                return "No reflection candidates found."
+            parts = []
+            for i, c in enumerate(clusters, 1):
+                mems = "\n".join(f"  - [{m['type']}] {m['content']}" for m in c["memories"])
+                parts.append(f"Cluster {i} ({c['signal']}, importance={c['importance']}):\n{mems}")
+            return "Synthesize 1-2 insights per cluster, then store via memory_store.\n\n" + "\n\n".join(parts)
         r = client.post("/v1/reflect", params={"force": force})
         r.raise_for_status()
         return str(r.json())
+
+    @server.tool()
+    async def memory_extract_entities(mode: str = "auto") -> str:
+        """Extract entities from memories. mode: 'auto', 'internal', 'candidates'.
+        In candidates mode, returns unlinked memories for YOU to extract entities, then call memory_link_entities."""
+        if mode == "candidates":
+            r = client.post("/v1/extract-entities/candidates")
+            r.raise_for_status()
+            memories = r.json().get("memories", [])
+            if not memories:
+                return "No unlinked memories found."
+            lines = [f"- [{m['memory_id']}] {m['content']}" for m in memories]
+            return f"Found {len(memories)} unlinked memories. Extract entities, then call memory_link_entities.\n\n" + "\n".join(lines)
+        r = client.post("/v1/extract-entities")
+        r.raise_for_status()
+        return str(r.json())
+
+    @server.tool()
+    async def memory_link_entities(entities: str) -> str:
+        """Write entity links from extraction results. entities: JSON [{\"memory_id\": \"...\", \"entities\": [{\"name\": \"...\", \"type\": \"...\"}]}]"""
+        import json
+        try:
+            parsed = json.loads(entities)
+        except (ValueError, TypeError):
+            return "Invalid JSON."
+        r = client.post("/v1/extract-entities/link", json={"entities": parsed})
+        r.raise_for_status()
+        d = r.json()
+        return f"Linked: {d['entities_created']} new entities, {d['edges_created']} edges."
 
     @server.tool()
     async def memory_snapshot_diff(name: str) -> str:

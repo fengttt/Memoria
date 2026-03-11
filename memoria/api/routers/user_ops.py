@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 
 from memoria.api.database import get_db_factory
 from memoria.api.dependencies import get_current_user_id
@@ -88,3 +89,88 @@ def extract_entities(
         except Exception as e:
             return {"total_memories": 0, "entities_found": 0, "edges_created": 0, "error": str(e)}
     return _with_cache(user_id, "extract_entities", _run, force)
+
+
+@router.post("/reflect/candidates")
+def reflect_candidates(
+    user_id: str = Depends(get_current_user_id),
+    db_factory=Depends(get_db_factory),
+):
+    """Return raw reflection candidates for user-LLM synthesis (no internal LLM needed)."""
+    from memoria.core.memory.graph.candidates import GraphCandidateProvider
+    provider = GraphCandidateProvider(db_factory)
+    candidates = provider.get_reflection_candidates(user_id)
+    return {"candidates": [
+        {
+            "signal": c.signal,
+            "importance": round(c.importance_score, 3),
+            "memories": [{"memory_id": m.memory_id, "content": m.content, "type": str(m.memory_type)} for m in c.memories],
+        }
+        for c in candidates
+    ]}
+
+
+@router.post("/extract-entities/candidates")
+def entity_candidates(
+    user_id: str = Depends(get_current_user_id),
+    db_factory=Depends(get_db_factory),
+):
+    """Return unlinked memories for user-LLM entity extraction."""
+    from memoria.core.memory.graph.graph_store import GraphStore
+    from memoria.core.memory.graph.types import EdgeType, NodeType
+    store = GraphStore(db_factory)
+    nodes = store.get_user_nodes(user_id, node_type=NodeType.SEMANTIC, active_only=True, load_embedding=False)
+    if not nodes:
+        return {"memories": []}
+    node_ids = {n.node_id for n in nodes}
+    edges = store.get_edges_for_nodes(node_ids)
+    linked = {nid for nid, es in edges.items() if any(e.edge_type == EdgeType.ENTITY_LINK.value for e in es)}
+    unlinked = [n for n in nodes if n.node_id not in linked]
+    return {"memories": [{"memory_id": n.memory_id or n.node_id, "content": n.content} for n in unlinked[:50]]}
+
+
+class LinkEntitiesRequest(BaseModel):
+    entities: list[dict] = Field(..., min_length=1)
+
+
+@router.post("/extract-entities/link")
+def link_entities(
+    req: LinkEntitiesRequest,
+    user_id: str = Depends(get_current_user_id),
+    db_factory=Depends(get_db_factory),
+):
+    """Write entity nodes + edges from user-LLM extraction results."""
+    # Lazy imports: avoid loading graph subsystem at API startup
+    from memoria.core.memory.graph.graph_store import GraphStore, _new_id
+    from memoria.core.memory.graph.types import EdgeType, GraphNodeData, NodeType
+    store = GraphStore(db_factory)
+    entity_cache: dict[str, str] = {}
+    pending_edges: list[tuple[str, str, str, float]] = []
+    entities_created = 0
+    for item in req.entities:
+        memory_id = item.get("memory_id", "")
+        node = store.get_node_by_memory_id(memory_id)
+        if not node:
+            continue
+        for ent in item.get("entities", []):
+            name = str(ent.get("name", "")).strip().lower()
+            if not name:
+                continue
+            ent_node_id = entity_cache.get(name)
+            if not ent_node_id:
+                existing = store.find_entity_node(user_id, name)
+                if existing:
+                    ent_node_id = existing.node_id
+                else:
+                    ent_node_id = _new_id()
+                    store.create_node(GraphNodeData(
+                        node_id=ent_node_id, user_id=user_id,
+                        node_type=NodeType.ENTITY, content=name,
+                        confidence=1.0, trust_tier="T1", importance=0.4,
+                    ))
+                    entities_created += 1
+                entity_cache[name] = ent_node_id
+            pending_edges.append((node.node_id, ent_node_id, EdgeType.ENTITY_LINK.value, 1.0))
+    if pending_edges:
+        store.add_edges_batch(pending_edges, user_id)
+    return {"entities_created": entities_created, "edges_created": len(pending_edges)}

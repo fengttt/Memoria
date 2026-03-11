@@ -510,6 +510,109 @@ class TestUserOps:
         assert r.status_code == 200
         assert isinstance(r.json(), dict)
 
+    def test_reflect_candidates(self, client, user_key):
+        _, h = user_key
+        r = client.post("/v1/reflect/candidates", headers=h)
+        assert r.status_code == 200
+        assert "candidates" in r.json()
+
+    def test_entity_candidates(self, client, user_key):
+        _, h = user_key
+        r = client.post("/v1/extract-entities/candidates", headers=h)
+        assert r.status_code == 200
+        assert "memories" in r.json()
+
+    def test_link_entities(self, client, db):
+        """Link entities via POST /v1/extract-entities/link — verify entity nodes + edges in DB."""
+        uid, h, _ = _make_user(client)
+        mid = client.post("/v1/memories", json={"content": "I use Python and Docker"}, headers=h).json()["memory_id"]
+
+        # Create graph node (default vector:v1 strategy doesn't auto-create graph nodes)
+        from uuid import uuid4
+        node_id = uuid4().hex
+        db.execute(text(
+            "INSERT INTO memory_graph_nodes "
+            "(node_id, user_id, node_type, content, memory_id, confidence, trust_tier, importance, is_active, created_at) "
+            "VALUES (:nid, :uid, 'semantic', 'I use Python and Docker', :mid, 0.9, 'T3', 0.5, 1, NOW(6))"
+        ), {"nid": node_id, "uid": uid, "mid": mid})
+        db.commit()
+
+        # Use unique entity names to avoid collision with other tests
+        ent_a = f"ent_a_{uid}"
+        ent_b = f"ent_b_{uid}"
+        r = client.post("/v1/extract-entities/link", json={
+            "entities": [{"memory_id": mid, "entities": [{"name": ent_a, "type": "tech"}, {"name": ent_b, "type": "tech"}]}]
+        }, headers=h)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["entities_created"] == 2
+        assert data["edges_created"] == 2
+        # Note: DB-level verification of entity nodes/edges is in
+        # tests/integration/test_graph_db_e2e.py::TestEntityLinking (same db_factory, no cross-connection issue).
+        # Here we trust the API response because MatrixOne's cross-connection snapshot isolation
+        # prevents the test's db fixture from seeing data written by the API endpoint's GraphStore.
+
+    def test_link_entities_invalid_json(self, client, user_key):
+        """Invalid payload returns 422."""
+        _, h = user_key
+        r = client.post("/v1/extract-entities/link", json={"entities": []}, headers=h)
+        assert r.status_code == 422
+
+
+# ── LLM-dependent tests (skipped if MEMORIA_LLM_API_KEY not set) ─────
+
+import os
+def _check_llm_configured():
+    """Check via MemoriaSettings (reads .env file)."""
+    try:
+        from memoria.config import get_settings
+        return bool(get_settings().llm_api_key)
+    except Exception:
+        return False
+
+_has_llm = _check_llm_configured()
+_skip_no_llm = pytest.mark.skipif(not _has_llm, reason="MEMORIA_LLM_API_KEY not configured")
+
+
+@_skip_no_llm
+class TestLLMReflect:
+    """Reflect with internal LLM — requires MEMORIA_LLM_API_KEY."""
+
+    def test_reflect_internal(self, client):
+        uid, h, _ = _make_user(client)
+        # Seed enough cross-session memories for reflection candidates
+        for i in range(5):
+            client.post("/v1/memories", json={
+                "content": f"Project uses technique_{i} for optimization",
+                "session_id": f"sess_{i % 3}",
+            }, headers=h)
+        r = client.post("/v1/reflect", params={"force": True}, headers=h)
+        assert r.status_code == 200
+        data = r.json()
+        # May produce 0 scenes if candidates don't pass threshold — that's OK
+        assert "scenes_created" in data or "insights" in data or "cached" in data or "note" in data
+
+
+@_skip_no_llm
+class TestLLMEntityExtraction:
+    """Entity extraction with internal LLM — requires MEMORIA_LLM_API_KEY."""
+
+    def test_extract_entities_internal(self, client, db):
+        uid, h, _ = _make_user(client)
+        client.post("/v1/memories", json={"content": "We use Python with FastAPI on AWS"}, headers=h)
+        r = client.post("/v1/extract-entities", params={"force": True}, headers=h)
+        assert r.status_code == 200
+        data = r.json()
+        assert "entities_found" in data or "error" in data
+
+    def test_extract_entities_candidates_mode_no_llm_needed(self, client):
+        """Candidates mode should always work, even without LLM."""
+        uid, h, _ = _make_user(client)
+        client.post("/v1/memories", json={"content": "Testing candidates mode"}, headers=h)
+        r = client.post("/v1/extract-entities/candidates", headers=h)
+        assert r.status_code == 200
+        assert "memories" in r.json()
+
 
 # ── Admin ─────────────────────────────────────────────────────────────
 

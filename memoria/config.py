@@ -27,6 +27,11 @@ class MemoriaSettings(BaseSettings):
     # Auth
     master_key: str = Field(default="", description="Master API key for admin operations (min 16 chars in production)")
 
+    # LLM (optional — for reflect + entity extraction)
+    llm_api_key: str = ""
+    llm_base_url: str | None = None
+    llm_model: str = "gpt-4o-mini"
+
     # Limits
     snapshot_limit: int = Field(default=100, description="Max snapshots per user")
 

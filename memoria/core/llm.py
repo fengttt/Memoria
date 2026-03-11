@@ -1,4 +1,4 @@
-"""Minimal LLM client for Memoria — only used by reflect/reflection engine.
+"""Minimal LLM client for Memoria — only used by reflect/entity extraction.
 
 Wraps OpenAI-compatible API. If no LLM is configured, reflect gracefully degrades.
 """
@@ -6,7 +6,6 @@ Wraps OpenAI-compatible API. If no LLM is configured, reflect gracefully degrade
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -20,15 +19,17 @@ def get_llm_client() -> Any:
     if _client is not None:
         return _client
 
-    api_key = os.environ.get("MEMORIA_LLM_API_KEY", "")
-    if not api_key:
+    from memoria.config import get_settings
+    s = get_settings()
+    if not s.llm_api_key:
         return None
 
     try:
-        import openai
-        base_url = os.environ.get("MEMORIA_LLM_BASE_URL")
-        model = os.environ.get("MEMORIA_LLM_MODEL", "gpt-4o-mini")
-        _client = MinimalLLMClient(api_key=api_key, base_url=base_url, model=model)
+        _client = MinimalLLMClient(
+            api_key=s.llm_api_key,
+            base_url=s.llm_base_url,
+            model=s.llm_model,
+        )
         return _client
     except ImportError:
         logger.warning("openai package not installed — reflect unavailable")
