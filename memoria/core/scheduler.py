@@ -100,9 +100,15 @@ class GovernanceTaskRunner:
                 results["mem_users_processed"] = r.users_processed
                 results["mem_users_skipped_no_changes"] = r.users_skipped_no_changes
                 results["mem_input_memories"] = r.input_memories
-                results["mem_reflection_candidates_found"] = r.reflection_candidates_found
-                results["mem_reflection_synthesized"] = r.reflection_candidates_synthesized
-                results["mem_reflection_skipped_low_importance"] = r.reflection_candidates_skipped_low_importance
+                results["mem_reflection_candidates_found"] = (
+                    r.reflection_candidates_found
+                )
+                results["mem_reflection_synthesized"] = (
+                    r.reflection_candidates_synthesized
+                )
+                results["mem_reflection_skipped_low_importance"] = (
+                    r.reflection_candidates_skipped_low_importance
+                )
             elif task_name == "weekly":
                 r = svc.run_weekly()
                 results["mem_cleaned_branches"] = r.cleaned_branches

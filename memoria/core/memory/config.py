@@ -99,6 +99,7 @@ class MemoryGovernanceConfig:
             "cluster_similarity_threshold",
             "reflection_daily_threshold",
             "reflection_immediate_threshold",
+            "reflection_llm_threshold",
         ):
             v = getattr(self, name)
             if not 0.0 <= v <= 1.0:

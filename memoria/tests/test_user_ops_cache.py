@@ -30,7 +30,9 @@ def _mock_db_factory(rows=None):
 class TestInMemoryCache:
     def test_first_call_runs_fn(self):
         factory, db = _mock_db_factory()
-        result = _with_cache("u1", "consolidate", lambda: {"status": "done"}, False, factory)
+        result = _with_cache(
+            "u1", "consolidate", lambda: {"status": "done"}, False, factory
+        )
         assert result == {"status": "done"}
 
     def test_second_call_returns_cached(self):
@@ -90,7 +92,9 @@ class TestDBFallback:
         db_result = (json.dumps({"old": True}), old_ts)
         factory, db = _mock_db_factory(rows=db_result)
 
-        result = _with_cache("u1", "consolidate", lambda: {"fresh": True}, False, factory)
+        result = _with_cache(
+            "u1", "consolidate", lambda: {"fresh": True}, False, factory
+        )
         assert result == {"fresh": True}
 
     def test_db_no_rows_runs_fn(self):
@@ -110,6 +114,8 @@ class TestPersistWrite:
         db_write.execute.assert_called_once()
         sql_arg = db_write.execute.call_args[0][0]
         assert "INSERT" in sql_arg.text
+        params = db_write.execute.call_args[0][1]
+        assert params["task"] == "user_op:consolidate:bb82030dbc2bcaba32a90bf2e207a84a"
         db_write.commit.assert_called_once()
 
     def test_db_write_failure_still_returns_result(self):

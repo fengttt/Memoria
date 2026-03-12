@@ -116,7 +116,7 @@ def init_db():
                 "  instance_id VARCHAR(64) NOT NULL,"
                 "  acquired_at DATETIME(6) NOT NULL DEFAULT NOW(),"
                 "  expires_at DATETIME(6) NOT NULL,"
-                "  task_name VARCHAR(64) NOT NULL"
+                "  task_name VARCHAR(255) NOT NULL"
                 ")"
             )
         )
@@ -124,7 +124,7 @@ def init_db():
             text(
                 "CREATE TABLE IF NOT EXISTS governance_runs ("
                 "  id BIGINT AUTO_INCREMENT PRIMARY KEY,"
-                "  task_name VARCHAR(64) NOT NULL,"
+                "  task_name VARCHAR(255) NOT NULL,"
                 "  result TEXT,"
                 "  created_at DATETIME(6) NOT NULL DEFAULT NOW(),"
                 "  INDEX idx_governance_runs_task (task_name)"

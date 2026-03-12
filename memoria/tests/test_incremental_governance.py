@@ -1,18 +1,13 @@
 """Unit tests for incremental governance, tiered reflection, and observability."""
 
-from dataclasses import dataclass, field
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from memoria.core.memory.reflection.engine import (
     ReflectionEngine,
     ReflectionResult,
-    SynthesizedInsight,
 )
-from memoria.core.memory.reflection.importance import DAILY_THRESHOLD
 from memoria.core.memory.interfaces import ReflectionCandidate
-from memoria.core.memory.types import Memory, MemoryType, TrustTier
+from memoria.core.memory.types import Memory, MemoryType
 
 
 def _mem(mid: str = "m1", sid: str = "s1", score: float = 0.8) -> Memory:
@@ -26,7 +21,9 @@ def _mem(mid: str = "m1", sid: str = "s1", score: float = 0.8) -> Memory:
     )
 
 
-def _candidate(importance: float, signal: str = "semantic_cluster") -> ReflectionCandidate:
+def _candidate(
+    importance: float, signal: str = "semantic_cluster"
+) -> ReflectionCandidate:
     c = ReflectionCandidate(
         memories=[_mem("m1", "s1"), _mem("m2", "s2")],
         signal=signal,
@@ -48,12 +45,14 @@ class TestTieredReflection:
         ]
         writer = MagicMock()
         llm = MagicMock()
-        llm.chat.return_value = '[]'
+        llm.chat.return_value = "[]"
 
         engine = ReflectionEngine(
-            provider, writer, llm,
-            threshold=0.2,       # both pass this
-            llm_threshold=0.5,   # only 0.6 passes this
+            provider,
+            writer,
+            llm,
+            threshold=0.2,  # both pass this
+            llm_threshold=0.5,  # only 0.6 passes this
         )
         result = engine.reflect("u1")
 
@@ -61,6 +60,7 @@ class TestTieredReflection:
         assert result.candidates_passed == 2
         assert result.candidates_skipped_low_importance == 1
         assert len(result.low_importance_candidates) == 1
+        assert result.low_importance_candidates[0] == ("semantic_cluster", 0.3)
         assert result.llm_calls == 1  # only the high-importance one
 
     def test_all_high_importance_all_synthesized(self):
@@ -71,10 +71,12 @@ class TestTieredReflection:
         ]
         writer = MagicMock()
         llm = MagicMock()
-        llm.chat.return_value = '[]'
+        llm.chat.return_value = "[]"
 
         engine = ReflectionEngine(
-            provider, writer, llm,
+            provider,
+            writer,
+            llm,
             threshold=0.5,
             llm_threshold=0.5,
         )
@@ -92,7 +94,9 @@ class TestTieredReflection:
         llm = MagicMock()
 
         engine = ReflectionEngine(
-            provider, writer, llm,
+            provider,
+            writer,
+            llm,
             threshold=0.5,
             llm_threshold=0.5,
         )
@@ -122,6 +126,7 @@ class TestIncrementalGovernance:
         sched = self._make_scheduler()
         db = MagicMock()
         from datetime import datetime
+
         # Has prior run, but no memories
         db.execute.return_value.scalar.side_effect = [datetime(2026, 1, 1), None]
         assert sched._has_changes_since_last_governance(db, "u1") is False
@@ -130,6 +135,7 @@ class TestIncrementalGovernance:
         sched = self._make_scheduler()
         db = MagicMock()
         from datetime import datetime
+
         # Last run at Jan 1, latest change at Jan 2
         db.execute.return_value.scalar.side_effect = [
             datetime(2026, 1, 1),
@@ -141,6 +147,7 @@ class TestIncrementalGovernance:
         sched = self._make_scheduler()
         db = MagicMock()
         from datetime import datetime
+
         # Last run at Jan 2, latest change at Jan 1
         db.execute.return_value.scalar.side_effect = [
             datetime(2026, 1, 2),
@@ -154,6 +161,92 @@ class TestIncrementalGovernance:
         db.execute.side_effect = Exception("db error")
         # Should fail-open: return True so governance still runs
         assert sched._has_changes_since_last_governance(db, "u1") is True
+
+    def test_queries_daily_user_marker_not_consolidate(self):
+        """Verify the change detection queries daily_user:{uid}, not user_op:consolidate:{uid}."""
+        sched = self._make_scheduler()
+        db = MagicMock()
+        db.execute.return_value.scalar.return_value = None
+        sched._has_changes_since_last_governance(db, "alice")
+        params = (
+            db.execute.call_args_list[0][1].get("parameters")
+            or db.execute.call_args_list[0][0][1]
+        )
+        assert params["task"] == "daily_user:2bd806c97f0e00af1a1fc3328fa763a9"
+
+    def test_coalesce_handles_null_updated_at(self):
+        """SQL uses COALESCE(updated_at, created_at) so NULL updated_at doesn't break GREATEST."""
+        sched = self._make_scheduler()
+        db = MagicMock()
+        # Capture the SQL text of the second query (the memory change query)
+        from datetime import datetime
+
+        db.execute.return_value.scalar.side_effect = [
+            datetime(2026, 1, 1),  # last governance run
+            datetime(2026, 1, 2),  # latest change (GREATEST with COALESCE)
+        ]
+        sched._has_changes_since_last_governance(db, "u1")
+        mem_query_sql = db.execute.call_args_list[1][0][0].text
+        assert "COALESCE(updated_at, created_at)" in mem_query_sql
+
+    def test_mark_daily_user_writes_correct_task_name(self):
+        """_mark_daily_user writes daily_user:{uid} to governance_runs."""
+        from memoria.core.memory.tabular.governance import GovernanceScheduler
+
+        sched = GovernanceScheduler(MagicMock())
+        db = MagicMock()
+        sched._mark_daily_user(db, "bob")
+        sql_arg = db.execute.call_args[0][0]
+        params = db.execute.call_args[0][1]
+        assert "INSERT" in sql_arg.text
+        assert params["task"] == "daily_user:81b637d8fcd2c6da6359e6963113a117"
+        db.commit.assert_called_once()
+
+    def test_long_user_id_fits_in_task_name(self):
+        """task_name is always bounded regardless of user_id length."""
+        sched = self._make_scheduler()
+        db = MagicMock()
+        long_uid = "u" * 500
+        sched._mark_daily_user(db, long_uid)
+        params = db.execute.call_args[0][1]
+        assert params["task"] == sched._daily_marker_key(long_uid)
+        assert len(params["task"]) <= 64  # prefix(11) + sha256[:32] = 43
+
+    def test_marker_not_written_on_errors(self):
+        """If _run_daily_for_user returns errors, marker should NOT be written."""
+        from memoria.core.memory.tabular.governance import (
+            GovernanceScheduler,
+            GovernanceCycleResult,
+        )
+        from unittest.mock import patch
+
+        sched = GovernanceScheduler(MagicMock())
+        error_result = GovernanceCycleResult(errors=["stale: db down"])
+        with (
+            patch.object(sched, "_run_daily_for_user", return_value=error_result),
+            patch.object(sched, "_build_reflection_engine", return_value=None),
+            patch.object(sched, "_mark_daily_user") as mock_mark,
+        ):
+            sched.run_daily("u1")
+            mock_mark.assert_not_called()
+
+    def test_marker_written_on_success(self):
+        """If _run_daily_for_user returns no errors, marker should be written."""
+        from memoria.core.memory.tabular.governance import (
+            GovernanceScheduler,
+            GovernanceCycleResult,
+        )
+        from unittest.mock import patch
+
+        sched = GovernanceScheduler(MagicMock())
+        ok_result = GovernanceCycleResult()
+        with (
+            patch.object(sched, "_run_daily_for_user", return_value=ok_result),
+            patch.object(sched, "_build_reflection_engine", return_value=None),
+            patch.object(sched, "_mark_daily_user") as mock_mark,
+        ):
+            sched.run_daily("u1")
+            mock_mark.assert_called_once()
 
 
 class TestObservability:
@@ -183,3 +276,10 @@ class TestObservability:
         # Can be overridden
         cfg2 = MemoryGovernanceConfig(reflection_llm_threshold=0.7)
         assert cfg2.reflection_llm_threshold == 0.7
+
+    def test_config_llm_threshold_validated(self):
+        from memoria.core.memory.config import MemoryGovernanceConfig
+        import pytest
+
+        with pytest.raises(ValueError):
+            MemoryGovernanceConfig(reflection_llm_threshold=1.5)

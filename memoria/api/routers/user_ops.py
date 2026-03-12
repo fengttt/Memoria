@@ -1,5 +1,6 @@
 """User-facing reflect & consolidate — sync with TTL cache."""
 
+import hashlib
 import json
 import time
 from datetime import datetime
@@ -21,7 +22,8 @@ _TTL = {"consolidate": 1800, "reflect": 7200, "extract_entities": 3600}  # secon
 
 def _with_cache(user_id: str, op: str, fn, force: bool, db_factory) -> dict:
     key = (user_id, op)
-    task_name = f"user_op:{op}:{user_id}"
+    uid_hash = hashlib.sha256(user_id.encode()).hexdigest()[:32]
+    task_name = f"user_op:{op}:{uid_hash}"
     now = time.time()
     if not force:
         cached = _cache.get(key)

@@ -39,8 +39,8 @@ class ReflectionResult:
     llm_calls: int = 0
     errors: list[str] = field(default_factory=list)
     total_ms: float = 0.0
-    # Low-importance candidates returned without LLM synthesis
-    low_importance_candidates: list[Any] = field(default_factory=list)
+    # Low-importance candidates: [(signal, score)] — lightweight summary only
+    low_importance_candidates: list[tuple[str, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -132,7 +132,7 @@ class ReflectionEngine:
         synth_candidates = [(c, s) for c, s in passed if s >= self._llm_threshold]
         low_candidates = [(c, s) for c, s in passed if s < self._llm_threshold]
         result.candidates_skipped_low_importance = len(low_candidates)
-        result.low_importance_candidates = [c for c, _ in low_candidates]
+        result.low_importance_candidates = [(c.signal, s) for c, s in low_candidates]
 
         # 3. Synthesize each qualifying candidate
         for candidate, score in synth_candidates:

@@ -130,6 +130,13 @@ class GovernanceReport:
     pollution_detected: bool = False
     errors: list[str] | None = None
     total_ms: float = 0.0
+    # Observability (incremental governance)
+    users_processed: int = 0
+    users_skipped_no_changes: int = 0
+    input_memories: int = 0
+    reflection_candidates_found: int = 0
+    reflection_candidates_synthesized: int = 0
+    reflection_candidates_skipped_low_importance: int = 0
 
 
 @dataclass

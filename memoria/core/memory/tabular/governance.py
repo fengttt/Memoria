@@ -11,6 +11,7 @@ Governance cycles:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -232,11 +233,19 @@ class GovernanceScheduler(DbConsumer):
                     combined.quarantined += r.quarantined
                     combined.scenes_created += r.scenes_created
                     combined.input_memories += r.input_memories
-                    combined.reflection_candidates_found += r.reflection_candidates_found
-                    combined.reflection_candidates_synthesized += r.reflection_candidates_synthesized
-                    combined.reflection_candidates_skipped_low_importance += r.reflection_candidates_skipped_low_importance
+                    combined.reflection_candidates_found += (
+                        r.reflection_candidates_found
+                    )
+                    combined.reflection_candidates_synthesized += (
+                        r.reflection_candidates_synthesized
+                    )
+                    combined.reflection_candidates_skipped_low_importance += (
+                        r.reflection_candidates_skipped_low_importance
+                    )
                     combined.errors.extend(r.errors)
                     combined.users_processed += 1
+                    if not r.errors:
+                        self._mark_daily_user(db, uid)
                 last_uid = rows[-1][0]
                 if len(rows) < batch_size:
                     break
@@ -246,7 +255,11 @@ class GovernanceScheduler(DbConsumer):
         """Daily: stale cleanup + quarantine low effective_confidence + orphaned incremental summaries."""
         # Build per-call reflection engine when called standalone
         reflection_engine = self._build_reflection_engine()
-        return self._run_daily_for_user(user_id, reflection_engine)
+        result = self._run_daily_for_user(user_id, reflection_engine)
+        if not result.errors:
+            with self._db() as db:
+                self._mark_daily_user(db, user_id)
+        return result
 
     def _run_daily_for_user(
         self,
@@ -284,8 +297,13 @@ class GovernanceScheduler(DbConsumer):
                 ref_result = reflection_engine.reflect(user_id)
                 result.scenes_created = ref_result.scenes_created
                 result.reflection_candidates_found = ref_result.candidates_found
-                result.reflection_candidates_synthesized = ref_result.candidates_passed - ref_result.candidates_skipped_low_importance
-                result.reflection_candidates_skipped_low_importance = ref_result.candidates_skipped_low_importance
+                result.reflection_candidates_synthesized = (
+                    ref_result.candidates_passed
+                    - ref_result.candidates_skipped_low_importance
+                )
+                result.reflection_candidates_skipped_low_importance = (
+                    ref_result.candidates_skipped_low_importance
+                )
                 if ref_result.scenes_created:
                     logger.info(
                         "Reflection created %d scenes for user %s",
@@ -305,14 +323,14 @@ class GovernanceScheduler(DbConsumer):
                     "SELECT MAX(created_at) FROM governance_runs "
                     "WHERE task_name = :task"
                 ),
-                {"task": f"user_op:consolidate:{user_id}"},
+                {"task": self._daily_marker_key(user_id)},
             ).scalar()
             if last_run is None:
                 return True  # never governed before
             latest_change = db.execute(
                 text(
-                    "SELECT MAX(GREATEST(created_at, updated_at)) FROM mem_memories "
-                    "WHERE user_id = :uid"
+                    "SELECT MAX(GREATEST(created_at, COALESCE(updated_at, created_at))) "
+                    "FROM mem_memories WHERE user_id = :uid"
                 ),
                 {"uid": user_id},
             ).scalar()
@@ -322,6 +340,34 @@ class GovernanceScheduler(DbConsumer):
         except Exception as e:
             logger.debug("Change detection failed for %s: %s", user_id, e)
             return True  # fail-open: run governance if check fails
+
+    @staticmethod
+    def _daily_marker_key(user_id: str) -> str:
+        uid_hash = hashlib.sha256(user_id.encode()).hexdigest()[:32]
+        return f"daily_user:{uid_hash}"
+
+    @staticmethod
+    def _mark_daily_user(db: Any, user_id: str) -> None:
+        """Write a per-user daily governance marker."""
+        try:
+            db.execute(
+                text(
+                    "INSERT INTO governance_runs (task_name, result, created_at) "
+                    "VALUES (:task, :result, :ts)"
+                ),
+                {
+                    "task": GovernanceScheduler._daily_marker_key(user_id),
+                    "result": "{}",
+                    "ts": _utcnow(),
+                },
+            )
+            db.commit()
+        except Exception as e:
+            logger.debug("daily_user marker write failed for %s: %s", user_id, e)
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     # ── Weekly ────────────────────────────────────────────────────────
 
