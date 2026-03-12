@@ -1,10 +1,13 @@
 """User-facing reflect & consolidate — sync with TTL cache."""
 
+import json
 import time
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from memoria.api.database import get_db_factory
 from memoria.api.dependencies import get_current_user_id
@@ -16,8 +19,9 @@ _cache: dict[tuple[str, str], tuple[float, Any]] = {}
 _TTL = {"consolidate": 1800, "reflect": 7200, "extract_entities": 3600}  # seconds
 
 
-def _with_cache(user_id: str, op: str, fn, force: bool) -> dict:
+def _with_cache(user_id: str, op: str, fn, force: bool, db_factory) -> dict:
     key = (user_id, op)
+    task_name = f"user_op:{op}:{user_id}"
     now = time.time()
     if not force:
         cached = _cache.get(key)
@@ -30,8 +34,47 @@ def _with_cache(user_id: str, op: str, fn, force: bool) -> dict:
                     "cached": True,
                     "cooldown_remaining_s": int(remaining),
                 }
+        db = db_factory()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT result, created_at FROM governance_runs "
+                    "WHERE task_name = :task "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"task": task_name},
+            ).first()
+            if row and row[1]:
+                remaining = _TTL[op] - (now - row[1].timestamp())
+                if remaining > 0:
+                    try:
+                        result = json.loads(row[0]) if row[0] else {}
+                    except Exception:
+                        result = {}
+                    _cache[key] = (row[1].timestamp(), result)
+                    return {
+                        **result,
+                        "cached": True,
+                        "cooldown_remaining_s": int(remaining),
+                    }
+        finally:
+            db.close()
     result = fn()
     _cache[key] = (now, result)
+    db = db_factory()
+    try:
+        db.execute(
+            text(
+                "INSERT INTO governance_runs (task_name, result, created_at) "
+                "VALUES (:task, :result, :ts)"
+            ),
+            {"task": task_name, "result": json.dumps(result), "ts": datetime.now()},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
     return result
 
 
@@ -50,7 +93,7 @@ def consolidate(
         result = svc.consolidate(user_id)
         return result if isinstance(result, dict) else {"status": "done"}
 
-    return _with_cache(user_id, "consolidate", _run, force)
+    return _with_cache(user_id, "consolidate", _run, force, db_factory)
 
 
 @router.post("/reflect")
@@ -79,7 +122,7 @@ def reflect(
         except Exception as e:
             return {"insights": 0, "skipped": 0, "note": f"reflect unavailable: {e}"}
 
-    return _with_cache(user_id, "reflect", _run, force)
+    return _with_cache(user_id, "reflect", _run, force, db_factory)
 
 
 @router.post("/extract-entities")
@@ -106,7 +149,7 @@ def extract_entities(
                 "error": str(e),
             }
 
-    return _with_cache(user_id, "extract_entities", _run, force)
+    return _with_cache(user_id, "extract_entities", _run, force, db_factory)
 
 
 @router.post("/reflect/candidates")

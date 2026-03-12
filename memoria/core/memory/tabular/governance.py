@@ -53,6 +53,13 @@ class GovernanceCycleResult:
     )  # table → {centroids, imbalance, needs_rebuild}
     errors: list[str] = field(default_factory=list)
     total_ms: float = 0.0
+    # Observability
+    input_memories: int = 0  # total active memories considered
+    users_processed: int = 0
+    users_skipped_no_changes: int = 0
+    reflection_candidates_found: int = 0
+    reflection_candidates_synthesized: int = 0
+    reflection_candidates_skipped_low_importance: int = 0
 
 
 class GovernanceScheduler(DbConsumer):
@@ -153,6 +160,7 @@ class GovernanceScheduler(DbConsumer):
             writer=self,
             llm_client=self._llm_client,
             threshold=self.config.reflection_daily_threshold,
+            llm_threshold=self.config.reflection_llm_threshold,
         )
 
     def run_daily_all(self) -> GovernanceCycleResult:
@@ -163,6 +171,7 @@ class GovernanceScheduler(DbConsumer):
         This allows N workers to split the user space with no coordination.
 
         Creates reflection provider/engine once and reuses across users.
+        Skips users with no memory changes since last governance run (incremental).
         """
         combined = GovernanceCycleResult()
 
@@ -203,11 +212,31 @@ class GovernanceScheduler(DbConsumer):
                 if not rows:
                     break
                 for (uid,) in rows:
+                    if not self._has_changes_since_last_governance(db, uid):
+                        combined.users_skipped_no_changes += 1
+                        continue
+                    # Count active memories using the already-open session
+                    try:
+                        cnt = db.execute(
+                            text(
+                                "SELECT COUNT(*) FROM mem_memories "
+                                "WHERE user_id = :uid AND is_active = 1"
+                            ),
+                            {"uid": uid},
+                        ).scalar()
+                        combined.input_memories += cnt or 0
+                    except Exception:
+                        pass
                     r = self._run_daily_for_user(uid, reflection_engine)
                     combined.cleaned_stale += r.cleaned_stale
                     combined.quarantined += r.quarantined
                     combined.scenes_created += r.scenes_created
+                    combined.input_memories += r.input_memories
+                    combined.reflection_candidates_found += r.reflection_candidates_found
+                    combined.reflection_candidates_synthesized += r.reflection_candidates_synthesized
+                    combined.reflection_candidates_skipped_low_importance += r.reflection_candidates_skipped_low_importance
                     combined.errors.extend(r.errors)
+                    combined.users_processed += 1
                 last_uid = rows[-1][0]
                 if len(rows) < batch_size:
                     break
@@ -254,6 +283,9 @@ class GovernanceScheduler(DbConsumer):
             try:
                 ref_result = reflection_engine.reflect(user_id)
                 result.scenes_created = ref_result.scenes_created
+                result.reflection_candidates_found = ref_result.candidates_found
+                result.reflection_candidates_synthesized = ref_result.candidates_passed - ref_result.candidates_skipped_low_importance
+                result.reflection_candidates_skipped_low_importance = ref_result.candidates_skipped_low_importance
                 if ref_result.scenes_created:
                     logger.info(
                         "Reflection created %d scenes for user %s",
@@ -264,6 +296,32 @@ class GovernanceScheduler(DbConsumer):
                 logger.error("Reflection failed: %s", e)
                 result.errors.append(f"reflection: {e}")
         return result
+
+    def _has_changes_since_last_governance(self, db: Any, user_id: str) -> bool:
+        """Check if user has memory changes since last daily governance run."""
+        try:
+            last_run = db.execute(
+                text(
+                    "SELECT MAX(created_at) FROM governance_runs "
+                    "WHERE task_name = :task"
+                ),
+                {"task": f"user_op:consolidate:{user_id}"},
+            ).scalar()
+            if last_run is None:
+                return True  # never governed before
+            latest_change = db.execute(
+                text(
+                    "SELECT MAX(GREATEST(created_at, updated_at)) FROM mem_memories "
+                    "WHERE user_id = :uid"
+                ),
+                {"uid": user_id},
+            ).scalar()
+            if latest_change is None:
+                return False  # no memories at all
+            return latest_change > last_run
+        except Exception as e:
+            logger.debug("Change detection failed for %s: %s", user_id, e)
+            return True  # fail-open: run governance if check fails
 
     # ── Weekly ────────────────────────────────────────────────────────
 

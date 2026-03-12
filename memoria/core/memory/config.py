@@ -62,6 +62,7 @@ class MemoryGovernanceConfig:
     # ── Reflection: importance scoring ──
     reflection_daily_threshold: float = 0.5
     reflection_immediate_threshold: float = 0.7
+    reflection_llm_threshold: float = 0.5  # below this: candidate-only (no LLM call)
 
     # ── Opinion evolution ──
     opinion_supporting_delta: float = 0.05

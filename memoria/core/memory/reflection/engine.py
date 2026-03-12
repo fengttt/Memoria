@@ -34,10 +34,13 @@ class ReflectionResult:
 
     candidates_found: int = 0
     candidates_passed: int = 0
+    candidates_skipped_low_importance: int = 0
     scenes_created: int = 0
     llm_calls: int = 0
     errors: list[str] = field(default_factory=list)
     total_ms: float = 0.0
+    # Low-importance candidates returned without LLM synthesis
+    low_importance_candidates: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -70,12 +73,14 @@ class ReflectionEngine:
         writer: MemoryWriter,
         llm_client: Any,
         threshold: float = DAILY_THRESHOLD,
+        llm_threshold: float | None = None,
         llm_retries: int = 1,
     ):
         self._provider = candidate_provider
         self._writer = writer
         self._llm = llm_client
         self._threshold = threshold
+        self._llm_threshold = llm_threshold if llm_threshold is not None else threshold
         self._llm_retries = llm_retries
 
     def reflect(
@@ -123,8 +128,14 @@ class ReflectionEngine:
             result.total_ms = (time.time() - start) * 1000
             return result
 
+        # 2b. Split: high-importance → LLM synthesis, low → candidates-only
+        synth_candidates = [(c, s) for c, s in passed if s >= self._llm_threshold]
+        low_candidates = [(c, s) for c, s in passed if s < self._llm_threshold]
+        result.candidates_skipped_low_importance = len(low_candidates)
+        result.low_importance_candidates = [c for c, _ in low_candidates]
+
         # 3. Synthesize each qualifying candidate
-        for candidate, score in passed:
+        for candidate, score in synth_candidates:
             try:
                 result.llm_calls += 1
                 insights = self._synthesize_with_retry(candidate, existing_knowledge)

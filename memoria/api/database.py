@@ -126,7 +126,8 @@ def init_db():
                 "  id BIGINT AUTO_INCREMENT PRIMARY KEY,"
                 "  task_name VARCHAR(64) NOT NULL,"
                 "  result TEXT,"
-                "  created_at DATETIME(6) NOT NULL DEFAULT NOW()"
+                "  created_at DATETIME(6) NOT NULL DEFAULT NOW(),"
+                "  INDEX idx_governance_runs_task (task_name)"
                 ")"
             )
         )
