@@ -190,7 +190,13 @@ fi
 
 TAG="${VERSION:-latest}"
 ASSET="memoria-${TARGET}.tar.gz"
-URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+if [ "$TAG" = "latest" ]; then
+  URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+  SUM_URL="https://github.com/${REPO}/releases/latest/download/SHA256SUMS.txt"
+else
+  URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+  SUM_URL="https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS.txt"
+fi
 
 if [ "$DRY_RUN" = true ]; then
   echo "URL: $URL"
@@ -248,7 +254,6 @@ curl -fL# -o "$TMP/$ASSET" "$URL" || {
 
 # ── Verify checksum ─────────────────────────────────────────────────
 
-SUM_URL="https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS.txt"
 if curl -sSLf -o "$TMP/SHA256SUMS.txt" "$SUM_URL" 2>/dev/null; then
   if (cd "$TMP" && grep -F "$ASSET" SHA256SUMS.txt | (sha256sum -c 2>/dev/null || shasum -a 256 -c 2>/dev/null)); then
     ok "Checksum verified"
