@@ -76,6 +76,16 @@ memoria init -i   # Interactive wizard (recommended)
 
 This creates MCP config + steering rules for your AI tool (Kiro, Cursor, or Claude).
 
+### 🦞 OpenClaw Plugin (Already Using OpenClaw?)
+
+Use the native OpenClaw plugin guide: [OpenClaw Plugin Setup](plugins/openclaw/README.md).
+
+```bash
+openclaw plugins install @matrixorigin/memory-memoria
+openclaw plugins enable memory-memoria
+openclaw memoria install
+```
+
 ### 4. Restart & verify
 
 Restart your AI tool, then ask: *"Do you have memory tools available?"*
