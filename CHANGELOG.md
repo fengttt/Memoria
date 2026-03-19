@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-03-19
+
+### 🏗️ Build
+
+- **ci**: Switch Linux release binaries to musl static linking (#56) ([b651cd1](https://github.com/matrixorigin/Memoria/commit/b651cd1abed188bca6b701e12be17000d8a35183))
+
+### 📚 Documentation
+
+- **openclaw**: Simplify install path and clarify success checks (#57) ([1e5a5f3](https://github.com/matrixorigin/Memoria/commit/1e5a5f3d350ccb26af3362da11533e97ea61823e))
+
+### 🚀 Features
+
+- More skills (#55) ([f62d777](https://github.com/matrixorigin/Memoria/commit/f62d777586e201956f5a86a89b15a476a0873561))
+
+### 🧪 Testing
+
+- Add session consistency test (#54) ([27bf9f8](https://github.com/matrixorigin/Memoria/commit/27bf9f89f5ac52eb6056c72fa0f30754a719cd9d))
 ## [0.2.0-rc] - 2026-03-19
 
 ### 🐛 Bug Fixes
