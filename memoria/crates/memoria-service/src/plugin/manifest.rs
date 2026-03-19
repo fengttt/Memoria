@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use memoria_core::MemoriaError;
-use semver::{Version, VersionReq};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -299,14 +299,6 @@ fn validate_manifest(
         }
     }
 
-    let memoria_req = parse_version_req(&manifest.compatibility.memoria)?;
-    if !memoria_req.matches(&policy.current_memoria_version) {
-        return Err(MemoriaError::Blocked(format!(
-            "Plugin is not compatible with Memoria {}",
-            policy.current_memoria_version
-        )));
-    }
-
     if manifest.capabilities.is_empty() {
         return Err(MemoriaError::Blocked(
             "Plugin must declare at least one capability".into(),
@@ -423,15 +415,6 @@ fn validate_capability(capability: &str) -> Result<(), MemoriaError> {
             "Invalid capability `{capability}`"
         )))
     }
-}
-
-fn parse_version_req(raw: &str) -> Result<VersionReq, MemoriaError> {
-    VersionReq::parse(raw)
-        .or_else(|_| {
-            let normalized = raw.split_whitespace().collect::<Vec<_>>().join(", ");
-            VersionReq::parse(&normalized)
-        })
-    .map_err(|err| MemoriaError::Blocked(format!("Invalid compatibility.memoria range: {err}")))
 }
 
 pub fn verify_manifest_signature(
