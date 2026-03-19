@@ -392,6 +392,7 @@ impl SqlMemoryStore {
             r#"CREATE TABLE IF NOT EXISTS mem_async_tasks (
                 task_id     VARCHAR(64)  PRIMARY KEY,
                 instance_id VARCHAR(128) NOT NULL,
+                user_id     VARCHAR(64)  NOT NULL DEFAULT '',
                 status      VARCHAR(16)  NOT NULL DEFAULT 'processing',
                 result_json JSON         DEFAULT NULL,
                 error_json  JSON         DEFAULT NULL,
@@ -403,6 +404,20 @@ impl SqlMemoryStore {
         .execute(&self.pool)
         .await
         .map_err(db_err)?;
+
+        // Backfill user_id column for existing deployments (ignore if already exists)
+        let _ = sqlx::query(
+            "ALTER TABLE mem_async_tasks ADD COLUMN user_id VARCHAR(64) NOT NULL DEFAULT '' AFTER instance_id",
+        )
+        .execute(&self.pool)
+        .await;
+
+        // Backfill extra_metadata column for existing deployments (ignore if already exists)
+        let _ = sqlx::query(
+            "ALTER TABLE mem_memories ADD COLUMN extra_metadata JSON AFTER source_event_ids",
+        )
+        .execute(&self.pool)
+        .await;
 
         // Migrate idx_user_active to include memory_type (idempotent)
         let needs_upgrade: bool = sqlx::query_scalar(
