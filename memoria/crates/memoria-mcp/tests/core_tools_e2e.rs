@@ -34,7 +34,7 @@ async fn spawn_fake_llm() -> (
 }
 
 async fn setup() -> (Arc<MemoryService>, String) {
-    let store = SqlMemoryStore::connect(&db_url(), test_dim())
+    let store = SqlMemoryStore::connect(&db_url(), test_dim(), uuid::Uuid::new_v4().to_string())
         .await
         .expect("connect");
     store.migrate().await.expect("migrate");
@@ -388,6 +388,19 @@ async fn test_purge_no_target() {
         text(&r)
     );
     println!("✅ purge no target: {}", text(&r));
+}
+
+// ── 13b. memory_purge: short topic returns validation error ───────────────────
+
+#[tokio::test]
+async fn test_purge_short_topic() {
+    let (svc, uid) = setup().await;
+    // 直接调用不会 panic 的版本
+    let result = memoria_mcp::tools::call("memory_purge", json!({"topic": "ab"}), &svc, &uid).await;
+    assert!(result.is_err(), "Should return error for short topic");
+    let err_msg = format!("{:?}", result.unwrap_err());
+    assert!(err_msg.contains("at least 3 characters"), "expected validation error, got: {err_msg}");
+    println!("✅ purge short topic rejected");
 }
 
 // ── 14. memory_profile: returns profile memories ─────────────────────────────
@@ -788,7 +801,7 @@ async fn test_link_entities_invalid_json() {
 async fn setup_with_llm(
     llm: Option<Arc<memoria_embedding::LlmClient>>,
 ) -> (Arc<MemoryService>, String) {
-    let store = SqlMemoryStore::connect(&db_url(), test_dim())
+    let store = SqlMemoryStore::connect(&db_url(), test_dim(), uuid::Uuid::new_v4().to_string())
         .await
         .expect("connect");
     store.migrate().await.expect("migrate");

@@ -25,7 +25,8 @@ fn dim_vec(idx: usize, val: f32) -> Vec<f32> {
 async fn setup() -> (SqlMemoryStore, String) {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "mysql://root:111@localhost:6001/memoria".to_string());
-    let store = SqlMemoryStore::connect(&url, test_dim())
+    let instance_id = uuid::Uuid::new_v4().to_string();
+    let store = SqlMemoryStore::connect(&url, test_dim(), instance_id)
         .await
         .expect("connect");
     store.migrate().await.expect("migrate");
@@ -170,10 +171,18 @@ async fn test_search_fulltext() {
 async fn test_search_vector() {
     let (store, uid) = setup().await;
 
+    // 清理该用户的旧数据（避免维度不匹配）
+    sqlx::query("DELETE FROM mem_memories WHERE user_id = ?")
+        .bind(&uid)
+        .execute(store.pool())
+        .await
+        .unwrap();
+
     let mut m1 = make_memory(&format!("vec-1-{uid}"), "close to query", &uid);
     m1.embedding = Some(dim_vec(0, 1.0));
     let mut m2 = make_memory(&format!("vec-2-{uid}"), "far from query", &uid);
     m2.embedding = Some(dim_vec(1, 1.0));
+    
     store.insert(&m1).await.unwrap();
     store.insert(&m2).await.unwrap();
 
@@ -182,7 +191,8 @@ async fn test_search_vector() {
         .search_vector(&uid, &query, 2)
         .await
         .expect("vector search");
-    assert!(!results.is_empty());
+    
+    assert!(!results.is_empty(), "Expected vector search results");
     assert!(results[0].memory_id.contains("vec-1"));
     println!("✅ search_vector: nearest={}", results[0].memory_id);
 }

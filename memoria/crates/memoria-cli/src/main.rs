@@ -361,12 +361,13 @@ async fn cmd_serve(db_url: Option<String>, port: u16, master_key: String) -> Res
     tracing::info!(
         db_url = %cfg.db_url, port = port,
         instance_id = %cfg.instance_id,
-        has_llm = cfg.has_llm(), has_embedding = cfg.has_embedding(),
+        has_llm = cfg.has_llm(),
+        embedding_provider = %cfg.embedding_provider,
         governance_plugin_binding = %cfg.governance_plugin_binding,
         "Starting Memoria API server"
     );
 
-    let store = SqlMemoryStore::connect(&cfg.db_url, cfg.embedding_dim).await?;
+    let store = SqlMemoryStore::connect(&cfg.db_url, cfg.embedding_dim, cfg.instance_id.clone()).await?;
     store.migrate().await?;
 
     let pool = MySqlPool::connect(&cfg.db_url).await?;
@@ -475,7 +476,7 @@ async fn cmd_mcp(
         "Starting Memoria MCP (embedded mode)"
     );
 
-    let store = SqlMemoryStore::connect(&cfg.db_url, cfg.embedding_dim).await?;
+    let store = SqlMemoryStore::connect(&cfg.db_url, cfg.embedding_dim, cfg.instance_id.clone()).await?;
     store.migrate().await?;
 
     let pool = MySqlPool::connect(&cfg.db_url).await?;
@@ -542,7 +543,7 @@ async fn cmd_plugin(command: PluginCommands) -> Result<()> {
     if let Some(db_url) = cfg_db_url {
         cfg.db_url = db_url;
     }
-    let store = SqlMemoryStore::connect(&cfg.db_url, cfg.embedding_dim).await?;
+    let store = SqlMemoryStore::connect(&cfg.db_url, cfg.embedding_dim, cfg.instance_id.clone()).await?;
     store.migrate().await?;
 
     match command {
@@ -827,6 +828,12 @@ fn build_embedder(
     cfg: &memoria_service::Config,
 ) -> Option<Arc<dyn memoria_core::interfaces::EmbeddingProvider>> {
     use memoria_embedding::HttpEmbedder;
+
+    if cfg.embedding_provider == "mock" {
+        tracing::info!(dim = cfg.embedding_dim, "using mock embedder");
+        return Some(Arc::new(memoria_embedding::MockEmbedder::new(cfg.embedding_dim))
+            as Arc<dyn memoria_core::interfaces::EmbeddingProvider>);
+    }
 
     if cfg.has_embedding() {
         Some(Arc::new(HttpEmbedder::new(
