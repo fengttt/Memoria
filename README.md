@@ -102,6 +102,29 @@ openclaw plugins enable memory-memoria
 openclaw memoria install
 ```
 
+### 🦞 OpenClaw Plugin (Already Using OpenClaw?)
+
+Use the native OpenClaw plugin guide: [OpenClaw Plugin Setup](plugins/openclaw/README.md).
+
+```bash
+# ensure memoria CLI exists (required as MCP bridge)
+command -v memoria >/dev/null || curl -sSL https://raw.githubusercontent.com/matrixorigin/Memoria/main/scripts/install.sh | bash -s -- -y -d ~/.local/bin
+
+# npm path
+openclaw plugins install @matrixorigin/memory-memoria
+openclaw plugins enable memory-memoria
+
+# if npm package is unavailable, fallback to source-link
+mkdir -p ~/.openclaw/plugins-src
+if [ ! -d ~/.openclaw/plugins-src/Memoria/.git ]; then git clone https://github.com/matrixorigin/Memoria.git ~/.openclaw/plugins-src/Memoria; else git -C ~/.openclaw/plugins-src/Memoria pull --ff-only; fi
+openclaw plugins install --link ~/.openclaw/plugins-src/Memoria/plugins/openclaw
+openclaw plugins enable memory-memoria
+
+# cloud-first setup flow
+openclaw memoria setup --mode cloud --api-url <MEMORIA_API_URL> --api-key <MEMORIA_API_KEY> --install-memoria
+openclaw memoria health
+```
+
 ### 4. Restart & verify
 
 Restart your AI tool, then ask: *"Do you have memory tools available?"*
