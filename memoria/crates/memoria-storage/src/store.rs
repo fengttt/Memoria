@@ -15,6 +15,18 @@ pub(crate) fn db_err(e: sqlx::Error) -> MemoriaError {
     MemoriaError::Database(e.to_string())
 }
 
+/// Returns true when a failed ALTER TABLE ADD COLUMN was rejected because
+/// the column already exists (MySQL/MatrixOne error 1060).
+/// This is the expected outcome when the column was created by CREATE TABLE
+/// before information_schema reflects it, so it should be treated as a no-op.
+fn is_duplicate_column(e: &sqlx::Error) -> bool {
+    use sqlx::mysql::MySqlDatabaseError;
+    e.as_database_error()
+        .and_then(|de| de.as_error().downcast_ref::<MySqlDatabaseError>())
+        .map(|me| me.number() == 1060)
+        .unwrap_or(false)
+}
+
 /// Spawn a background task that periodically logs pool utilization.
 /// Warns when idle connections drop below 10% of pool size.
 /// Stops automatically when the pool is closed.
@@ -792,18 +804,24 @@ impl SqlMemoryStore {
         .map_err(db_err)?;
 
         // mem_api_call_log — per-user API call statistics for the Monitor dashboard.
-        // Records every authenticated /v1/* request: method, path, HTTP status,
-        // latency, and timestamp.  Insertions are batched (every 5 s) to avoid
-        // per-request DB pressure.
+        // Records every authenticated request from two entry points:
+        //   - /v1/* REST endpoints: HTTP status_code reflects the real outcome;
+        //     rpc_success = 1 and rpc_error_code = NULL (not applicable).
+        //   - /mcp  JSON-RPC endpoint: HTTP status_code is 200 for standard requests
+        //     and 204 for notifications (no-reply per JSON-RPC 2.0 §4);
+        //     rpc_success / rpc_error_code carry the business-level result.
+        // Insertions are batched (every 5 s) to avoid per-request DB pressure.
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS mem_api_call_log (
-                id           BIGINT       NOT NULL AUTO_INCREMENT,
-                user_id      VARCHAR(64)  NOT NULL,
-                method       VARCHAR(10)  NOT NULL DEFAULT '',
-                path         VARCHAR(256) NOT NULL,
-                status_code  SMALLINT     NOT NULL DEFAULT 0,
-                latency_ms   INT          NOT NULL DEFAULT 0,
-                called_at    DATETIME(6)  NOT NULL DEFAULT NOW(6),
+                id              BIGINT       NOT NULL AUTO_INCREMENT,
+                user_id         VARCHAR(64)  NOT NULL,
+                method          VARCHAR(10)  NOT NULL DEFAULT '',
+                path            VARCHAR(256) NOT NULL,
+                status_code     SMALLINT     NOT NULL DEFAULT 0,
+                latency_ms      INT          NOT NULL DEFAULT 0,
+                called_at       DATETIME(6)  NOT NULL DEFAULT NOW(6),
+                rpc_success     TINYINT(1)   NOT NULL DEFAULT 1,
+                rpc_error_code  INT          NULL,
                 PRIMARY KEY (id),
                 INDEX idx_user_called (user_id, called_at)
             )"#,
@@ -830,6 +848,58 @@ impl SqlMemoryStore {
             )
             .execute(&self.pool)
             .await;
+        }
+
+        // Migration: add rpc_success / rpc_error_code columns for Streamable HTTP MCP tracking.
+        // These separate HTTP-level status from JSON-RPC business errors so Monitor stats
+        // remain accurate for both /v1/* REST calls and /mcp JSON-RPC calls.
+        //
+        // We always attempt the ALTER TABLE rather than relying solely on information_schema,
+        // because some DB engines (e.g. MatrixOne) have a delay before newly-created columns
+        // appear in information_schema.columns, which would cause a false-negative check and
+        // a redundant (but harmless) ALTER.  MySQL error 1060 means "duplicate column name"
+        // (the column already exists), which is the desired idempotent outcome and is not fatal.
+        // Any other error is treated as startup-fatal because the call-log writer unconditionally
+        // inserts these columns; without them every flush would fail with "unknown column".
+        let add_rpc_success = sqlx::query(
+            "ALTER TABLE mem_api_call_log \
+             ADD COLUMN rpc_success TINYINT(1) NOT NULL DEFAULT 1",
+        )
+        .execute(&self.pool)
+        .await;
+        if let Err(e) = add_rpc_success {
+            if !is_duplicate_column(&e) {
+                tracing::error!(
+                    error = %e,
+                    "Migration fatal: mem_api_call_log.rpc_success could not be added. \
+                     The call-log writer always inserts this column; without it ALL \
+                     call-log flushes will fail with 'unknown column', silently dropping \
+                     every /v1/* and /mcp monitoring entry. \
+                     Fix DB permissions or add the column manually, then restart."
+                );
+                return Err(db_err(e));
+            }
+            // Column already exists — idempotent, safe to continue.
+        }
+
+        let add_rpc_error_code = sqlx::query(
+            "ALTER TABLE mem_api_call_log \
+             ADD COLUMN rpc_error_code INT NULL",
+        )
+        .execute(&self.pool)
+        .await;
+        if let Err(e) = add_rpc_error_code {
+            if !is_duplicate_column(&e) {
+                tracing::error!(
+                    error = %e,
+                    "Migration fatal: mem_api_call_log.rpc_error_code could not be added. \
+                     The call-log writer always inserts this column; without it ALL \
+                     call-log flushes will fail with 'unknown column'. \
+                     Fix DB permissions or add the column manually, then restart."
+                );
+                return Err(db_err(e));
+            }
+            // Column already exists — idempotent, safe to continue.
         }
 
         // Migration: add composite index (user_id, memory_id) on mem_retrieval_feedback.
