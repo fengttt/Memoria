@@ -25,6 +25,10 @@ fn validate_identifier(name: &str) -> Result<&str, MemoriaError> {
     }
 }
 
+fn quote_identifier(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub snapshot_name: String,
@@ -66,7 +70,10 @@ impl GitForDataService {
         let safe = validate_identifier(name)?;
         exec_ddl(
             &self.pool,
-            &format!("CREATE SNAPSHOT {safe} FOR ACCOUNT sys"),
+            &format!(
+                "CREATE SNAPSHOT {safe} FOR DATABASE {}",
+                quote_identifier(&self.db_name)
+            ),
         )
         .await?;
         self.get_snapshot(name).await?.ok_or_else(|| {
@@ -97,6 +104,13 @@ impl GitForDataService {
                     database_name: r.try_get("DATABASE_NAME").ok(),
                     table_name: r.try_get("TABLE_NAME").ok(),
                 })
+            })
+            .filter(|result| {
+                result
+                    .as_ref()
+                    .ok()
+                    .and_then(|snapshot| snapshot.database_name.as_ref())
+                    .is_some_and(|db_name| db_name == &self.db_name)
             })
             .collect()
     }
@@ -185,7 +199,7 @@ impl GitForDataService {
 
     pub async fn drop_branch(&self, branch_name: &str) -> Result<(), MemoriaError> {
         let safe = validate_identifier(branch_name)?;
-        let db = &self.db_name;
+        let db = quote_identifier(&self.db_name);
         exec_ddl(&self.pool, &format!("data branch delete table {db}.{safe}")).await
     }
 

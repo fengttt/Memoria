@@ -3340,15 +3340,22 @@ async fn test_snapshot_get_detail() {
     let uid = uid();
 
     // Store memories
-    for content in [
-        "snapshot detail A",
-        "snapshot detail B",
-        "snapshot detail C",
+    for (content, trust_tier, initial_confidence, observed_at) in [
+        ("snapshot detail A", "T1", 0.91, "2026-04-01T10:00:00Z"),
+        ("snapshot detail B", "T2", 0.82, "2026-04-02T10:00:00Z"),
+        ("snapshot detail C", "T3", 0.73, "2026-04-03T10:00:00Z"),
     ] {
         client
             .post(format!("{base}/v1/memories"))
             .header("X-User-Id", &uid)
-            .json(&json!({"content": content, "memory_type": "semantic"}))
+            .json(&json!({
+                "content": content,
+                "memory_type": "semantic",
+                "trust_tier": trust_tier,
+                "initial_confidence": initial_confidence,
+                "session_id": "snapshot-detail-session",
+                "observed_at": observed_at
+            }))
             .send()
             .await
             .unwrap();
@@ -3381,11 +3388,34 @@ async fn test_snapshot_get_detail() {
     assert!(body["by_type"]["semantic"].as_i64().unwrap() >= 3);
     let mems = body["memories"].as_array().unwrap();
     assert_eq!(mems.len(), 3);
+    let mut tiers: Vec<_> = mems
+        .iter()
+        .map(|m| m["trust_tier"].as_str().unwrap_or_default().to_string())
+        .collect();
+    tiers.sort();
+    assert_eq!(tiers, vec!["T1", "T2", "T3"]);
     // Brief mode: content should be short
     for m in mems {
         assert!(m["memory_id"].as_str().is_some());
+        assert_eq!(m["user_id"], uid);
         assert!(m["content"].as_str().is_some());
         assert_eq!(m["memory_type"], "semantic");
+        assert!(m["initial_confidence"].is_number());
+        assert_eq!(m["is_active"], true);
+        assert_eq!(m["session_id"], "snapshot-detail-session");
+        assert!(m["observed_at"].as_str().is_some());
+        assert!(
+            m["created_at"].as_str().is_some(),
+            "brief mode should include created_at"
+        );
+        assert!(
+            m["trust_tier"].as_str().is_some(),
+            "brief mode should include trust_tier"
+        );
+        assert!(
+            m.get("retrieval_score").is_some(),
+            "brief mode should include retrieval_score"
+        );
     }
     println!(
         "✅ GET /v1/snapshots/:name (brief): {} memories, by_type={}",
@@ -3407,6 +3437,26 @@ async fn test_snapshot_get_detail() {
         mems[0].get("confidence").is_some(),
         "full detail should include confidence: {}",
         mems[0]
+    );
+    assert!(
+        mems.iter().all(|m| m["trust_tier"].as_str().is_some()),
+        "full detail should include trust_tier: {body}"
+    );
+    assert!(
+        mems.iter().all(|m| m["created_at"].as_str().is_some()),
+        "full detail should include created_at: {body}"
+    );
+    assert!(
+        mems.iter().all(|m| m["observed_at"].as_str().is_some()),
+        "full detail should include observed_at: {body}"
+    );
+    assert!(
+        mems.iter().all(|m| m["initial_confidence"].is_number()),
+        "full detail should include initial_confidence: {body}"
+    );
+    assert!(
+        mems.iter().all(|m| m.get("retrieval_score").is_some()),
+        "full detail should include retrieval_score: {body}"
     );
     println!("✅ GET /v1/snapshots/:name (full): confidence present");
 
@@ -3454,11 +3504,11 @@ async fn test_snapshot_diff() {
 
     // Store 2 memories
     let mut mids = vec![];
-    for content in ["diff base A", "diff base B"] {
+    for (content, trust_tier) in [("diff base A", "T1"), ("diff base B", "T2")] {
         let r = client
             .post(format!("{base}/v1/memories"))
             .header("X-User-Id", &uid)
-            .json(&json!({"content": content}))
+            .json(&json!({"content": content, "trust_tier": trust_tier}))
             .send()
             .await
             .unwrap();
@@ -3487,7 +3537,7 @@ async fn test_snapshot_diff() {
     client
         .post(format!("{base}/v1/memories"))
         .header("X-User-Id", &uid)
-        .json(&json!({"content": "diff added C"}))
+        .json(&json!({"content": "diff added C", "trust_tier": "T3"}))
         .send()
         .await
         .unwrap();
@@ -3524,12 +3574,20 @@ async fn test_snapshot_diff() {
             .any(|m| m["content"].as_str().unwrap().contains("diff added C")),
         "should find added memory: {added:?}"
     );
+    assert!(
+        added.iter().any(|m| m["trust_tier"] == "T3"),
+        "added diff entries should include trust_tier: {added:?}"
+    );
     // "diff base A" should be in removed (deleted after snapshot)
     assert!(
         removed
             .iter()
             .any(|m| m["content"].as_str().unwrap().contains("diff base A")),
         "should find removed memory: {removed:?}"
+    );
+    assert!(
+        removed.iter().any(|m| m["trust_tier"] == "T1"),
+        "removed diff entries should include trust_tier: {removed:?}"
     );
     println!(
         "✅ GET /v1/snapshots/:name/diff: added={}, removed={}",
@@ -3643,6 +3701,9 @@ async fn test_api_snapshot_limit_is_per_user() {
             result.contains("created"),
             "snapshot create failed: {result}"
         );
+        assert_eq!(body["name"], name.as_str());
+        assert!(body["created_at"].is_string(), "missing created_at: {body}");
+        assert!(body["timestamp"].is_string(), "missing timestamp: {body}");
     }
 
     let overflow = format!(
@@ -3693,6 +3754,7 @@ async fn test_api_snapshot_limit_is_per_user() {
     assert_eq!(r.status(), 200);
     let body: Value = r.json().await.unwrap();
     let listed = body["result"].as_str().unwrap_or("");
+    let snapshots = body["snapshots"].as_array().expect("snapshots array");
     assert!(
         listed.contains(&b_snap),
         "B should see own snapshot: {listed}"
@@ -3700,6 +3762,16 @@ async fn test_api_snapshot_limit_is_per_user() {
     assert!(
         !listed.contains(&names_a[0]),
         "B should not see A's snapshots: {listed}"
+    );
+    assert!(
+        snapshots.iter().any(|snapshot| snapshot["name"] == b_snap),
+        "B should see own snapshot in structured list: {body}"
+    );
+    assert!(
+        snapshots
+            .iter()
+            .all(|snapshot| snapshot["name"] != names_a[0]),
+        "B structured list should not see A's snapshots: {body}"
     );
 
     client
@@ -4006,6 +4078,26 @@ async fn test_remote_snapshot_detail_and_diff() {
     assert_eq!(r.status(), 200);
     let body: Value = r.json().await.unwrap();
     assert_eq!(body["memory_count"], 2, "snapshot should have 2 memories");
+    assert!(
+        body["memories"].as_array().unwrap().iter().all(|m| {
+            m["user_id"] == uid
+                && m["initial_confidence"].is_number()
+                && m["is_active"] == true
+                && m.get("session_id").is_some()
+                && m["observed_at"].as_str().is_some()
+                && m["trust_tier"].as_str().is_some()
+                && m.get("retrieval_score").is_some()
+        }),
+        "remote snapshot detail should align with MemoryResponse metadata: {body}"
+    );
+    assert!(
+        body["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["created_at"].as_str().is_some()),
+        "remote snapshot detail should include created_at: {body}"
+    );
     println!(
         "✅ remote snapshot detail: memory_count={}",
         body["memory_count"]
@@ -5226,6 +5318,66 @@ async fn test_api_snapshot_rollback() {
         "rollback response: {body}"
     );
     println!("✅ POST /v1/snapshots/:name/rollback: {}", body["result"]);
+}
+
+#[tokio::test]
+async fn test_api_branch_list_returns_structured_json() {
+    let (base, client) = spawn_server().await;
+    let uid = uid();
+    let branch = format!(
+        "api_branch_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..6]
+    );
+
+    let r = client
+        .post(format!("{base}/v1/branches"))
+        .header("X-User-Id", &uid)
+        .json(&json!({ "name": branch }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+
+    let r = client
+        .post(format!("{base}/v1/branches/{branch}/checkout"))
+        .header("X-User-Id", &uid)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    let r = client
+        .get(format!("{base}/v1/branches"))
+        .header("X-User-Id", &uid)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: Value = r.json().await.unwrap();
+    let branches = body["branches"].as_array().expect("branches array");
+    assert!(
+        branches
+            .iter()
+            .any(|entry| entry["name"] == "main" && entry["active"] == false),
+        "main branch should be present and inactive after checkout: {body}"
+    );
+    assert!(
+        branches
+            .iter()
+            .any(|entry| entry["name"] == branch && entry["active"] == true),
+        "checked out branch should be marked active: {body}"
+    );
+    assert!(
+        body["result"].as_str().unwrap_or("").contains("Branches:"),
+        "compat text should still be present: {body}"
+    );
+
+    client
+        .delete(format!("{base}/v1/branches/{branch}"))
+        .header("X-User-Id", &uid)
+        .send()
+        .await
+        .unwrap();
 }
 
 // ── Entity list ───────────────────────────────────────────────────────────────

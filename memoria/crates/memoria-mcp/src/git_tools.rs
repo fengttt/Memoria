@@ -2,7 +2,7 @@
 //! 9 tools — brings total to 17 (8 core + 9 git).
 //!
 //! Parity with Python version:
-//! - snapshot names prefixed with "mem_snap_", sanitized to 40 chars
+//! - snapshot names prefixed with "mem_snap_", scoped by user DB, sanitized to 40 chars
 //! - snapshot list filters to current user's mem_snap_ + global mem_milestone_, strips prefix for display
 //! - snapshot delete supports names, prefix, older_than
 //! - snapshot limit: 20 per user
@@ -31,11 +31,46 @@ fn git_err(e: impl std::fmt::Display) -> MemoriaError {
     MemoriaError::Internal(e.to_string())
 }
 
+fn validate_identifier(name: &str) -> Result<&str, MemoriaError> {
+    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        Ok(name)
+    } else {
+        Err(MemoriaError::Internal(format!(
+            "Invalid identifier: {name:?} — only alphanumeric and underscore allowed"
+        )))
+    }
+}
+
 const MAX_USER_SNAPSHOTS: i64 = 20;
 const MAX_BRANCHES: i64 = 20;
+const MAX_IDENTIFIER_LEN: usize = 64;
 const SNAP_PREFIX: &str = "mem_snap_";
 const MILESTONE_PREFIX: &str = "mem_milestone_";
 const SAFETY_PREFIX: &str = "mem_snap_pre_";
+const SNAP_SCOPE_MAX_LEN: usize = MAX_IDENTIFIER_LEN - SNAP_PREFIX.len() - 2 - 2 - 40;
+const SAFETY_SCOPE_MAX_LEN: usize = 21;
+
+fn safety_prefix(db_name: Option<&str>) -> String {
+    match db_name {
+        Some(db_name) => format!(
+            "mem_snap_{}_pre_",
+            compact_identifier_fragment(db_name, SAFETY_SCOPE_MAX_LEN)
+        ),
+        None => SAFETY_PREFIX.to_string(),
+    }
+}
+
+fn legacy_safety_prefix(db_name: Option<&str>) -> Option<String> {
+    db_name.map(|db_name| format!("mem_snap_{db_name}_pre_"))
+}
+
+fn is_safety_snapshot_name(name: &str, db_name: Option<&str>) -> bool {
+    name.starts_with(SAFETY_PREFIX)
+        || name.starts_with(&safety_prefix(db_name))
+        || legacy_safety_prefix(db_name)
+            .as_deref()
+            .is_some_and(|prefix| name.starts_with(prefix))
+}
 
 /// Sanitize a user-provided name: keep alphanumeric+underscore, truncate to 40 chars.
 /// If result starts with non-alpha, prepend "s_".
@@ -57,18 +92,76 @@ fn sanitize_name(name: &str) -> String {
     clean
 }
 
+fn sanitize_snapshot_scope(scope: &str) -> String {
+    compact_identifier_fragment(scope, SNAP_SCOPE_MAX_LEN)
+}
+
+fn sanitize_identifier_fragment(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if sanitized.is_empty() {
+        "db".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn compact_identifier_fragment(value: &str, max_len: usize) -> String {
+    let sanitized = sanitize_identifier_fragment(value);
+    if sanitized.len() <= max_len {
+        return sanitized;
+    }
+    if max_len <= 4 {
+        return sanitized.chars().take(max_len).collect();
+    }
+    let head_len = (max_len - 1) / 2;
+    let tail_len = max_len - head_len - 1;
+    let head: String = sanitized.chars().take(head_len).collect();
+    let tail_chars: Vec<char> = sanitized.chars().collect();
+    let tail: String = tail_chars[tail_chars.len().saturating_sub(tail_len)..]
+        .iter()
+        .collect();
+    format!("{head}_{tail}")
+}
+
 /// Convert user-facing snapshot name → internal MatrixOne snapshot name.
-fn snap_internal(name: &str) -> String {
+fn snap_internal(db_name: &str, name: &str) -> String {
     if name.starts_with(SNAP_PREFIX) || name.starts_with(MILESTONE_PREFIX) {
         name.to_string()
     } else {
-        format!("{SNAP_PREFIX}{}", sanitize_name(name))
+        let scope = sanitize_snapshot_scope(db_name);
+        let internal = format!(
+            "{SNAP_PREFIX}{}_{scope}_{}",
+            scope.len(),
+            sanitize_name(name)
+        );
+        debug_assert!(internal.len() <= MAX_IDENTIFIER_LEN);
+        internal
     }
 }
 
 /// Convert internal snapshot name → user-facing display name.
 fn snap_display(internal: &str) -> String {
     if let Some(rest) = internal.strip_prefix(SNAP_PREFIX) {
+        if let Some((len_part, scoped_rest)) = rest.split_once('_') {
+            if let Ok(scope_len) = len_part.parse::<usize>() {
+                if scoped_rest.len() > scope_len
+                    && scoped_rest.as_bytes().get(scope_len) == Some(&b'_')
+                {
+                    return scoped_rest[scope_len + 1..].to_string();
+                }
+            }
+        }
         rest.to_string()
     } else if let Some(rest) = internal.strip_prefix(MILESTONE_PREFIX) {
         format!("auto:{rest}")
@@ -77,12 +170,29 @@ fn snap_display(internal: &str) -> String {
     }
 }
 
+fn safety_display_name(internal: &str) -> Option<String> {
+    if let Some(rest) = internal.strip_prefix(SAFETY_PREFIX) {
+        return Some(format!("pre_{rest}"));
+    }
+    let rest = internal.strip_prefix(SNAP_PREFIX)?;
+    let (_, after_prefix) = rest.split_once("_pre_")?;
+    Some(format!("pre_{after_prefix}"))
+}
+
 #[derive(Clone)]
-struct VisibleSnapshot {
-    display_name: String,
-    internal_name: String,
-    timestamp: Option<NaiveDateTime>,
-    registered: bool,
+pub struct VisibleSnapshot {
+    pub display_name: String,
+    pub internal_name: String,
+    pub timestamp: Option<NaiveDateTime>,
+    pub registered: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ReplaceCandidate {
+    main_memory_id: String,
+    branch_memory_id: String,
+    replacement_content: String,
+    conflict_distance: f64,
 }
 
 fn milestone_internal(name: &str) -> Option<String> {
@@ -95,20 +205,32 @@ fn milestone_internal(name: &str) -> Option<String> {
     }
 }
 
-fn snapshot_store(
+async fn snapshot_store(
     svc: &Arc<MemoryService>,
-) -> Result<&memoria_storage::SqlMemoryStore, MemoriaError> {
-    svc.sql_store
-        .as_deref()
-        .ok_or_else(|| MemoriaError::Internal("Snapshot ops require SQL store".into()))
+    user_id: &str,
+) -> Result<Arc<memoria_storage::SqlMemoryStore>, MemoriaError> {
+    svc.user_sql_store(user_id).await
 }
 
-async fn visible_snapshots_for_user(
-    git: &Arc<GitForDataService>,
+fn git_for_store(
+    sql: &Arc<memoria_storage::SqlMemoryStore>,
+) -> Result<GitForDataService, MemoriaError> {
+    let db_name = sql.database_name().ok_or_else(|| {
+        MemoriaError::Internal("Git ops require a database-backed SQL store".into())
+    })?;
+    Ok(GitForDataService::new(
+        sql.pool().clone(),
+        db_name.to_string(),
+    ))
+}
+
+pub async fn visible_snapshots_for_user(
     svc: &Arc<MemoryService>,
     user_id: &str,
 ) -> Result<Vec<VisibleSnapshot>, MemoriaError> {
-    let sql = snapshot_store(svc)?;
+    let sql = snapshot_store(svc, user_id).await?;
+    let db_name = sql.database_name();
+    let git = git_for_store(&sql)?;
     let all = git.list_snapshots().await.map_err(git_err)?;
     let actual_by_name: HashMap<String, memoria_git::Snapshot> = all
         .into_iter()
@@ -136,10 +258,15 @@ async fn visible_snapshots_for_user(
     for actual in actual_by_name.values() {
         if !seen_internal.contains(&actual.snapshot_name)
             && (actual.snapshot_name.starts_with(MILESTONE_PREFIX)
-                || actual.snapshot_name.starts_with(SAFETY_PREFIX))
+                || is_safety_snapshot_name(&actual.snapshot_name, db_name))
         {
             snapshots.push(VisibleSnapshot {
-                display_name: snap_display(&actual.snapshot_name),
+                display_name: if is_safety_snapshot_name(&actual.snapshot_name, db_name) {
+                    safety_display_name(&actual.snapshot_name)
+                        .unwrap_or_else(|| snap_display(&actual.snapshot_name))
+                } else {
+                    snap_display(&actual.snapshot_name)
+                },
                 internal_name: actual.snapshot_name.clone(),
                 timestamp: actual.timestamp,
                 registered: false,
@@ -152,11 +279,13 @@ async fn visible_snapshots_for_user(
 }
 
 async fn resolve_snapshot_for_user(
-    git: &Arc<GitForDataService>,
     svc: &Arc<MemoryService>,
     user_id: &str,
     name: &str,
 ) -> Result<Option<String>, MemoriaError> {
+    let sql = snapshot_store(svc, user_id).await?;
+    let git = git_for_store(&sql)?;
+    let db_name = sql.database_name();
     if let Some(internal) = milestone_internal(name) {
         return Ok(git
             .get_snapshot(&internal)
@@ -164,7 +293,7 @@ async fn resolve_snapshot_for_user(
             .map_err(git_err)?
             .map(|_| internal));
     }
-    if name.starts_with(SAFETY_PREFIX) {
+    if is_safety_snapshot_name(name, db_name) {
         return Ok(git
             .get_snapshot(name)
             .await
@@ -172,14 +301,50 @@ async fn resolve_snapshot_for_user(
             .map(|_| name.to_string()));
     }
 
-    let sql = snapshot_store(svc)?;
     let reg = if name.starts_with(SNAP_PREFIX) {
         sql.get_snapshot_registration_by_internal(user_id, name)
             .await?
     } else {
         sql.get_snapshot_registration(user_id, name).await?
     };
-    Ok(reg.map(|r| r.snapshot_name))
+    if let Some(reg) = reg {
+        return Ok(Some(reg.snapshot_name));
+    }
+    Ok(visible_snapshots_for_user(svc, user_id)
+        .await?
+        .into_iter()
+        .find(|snapshot| snapshot.display_name == name)
+        .map(|snapshot| snapshot.internal_name))
+}
+
+async fn acquire_snapshot_create_lock(
+    lock_store: &Arc<memoria_storage::SqlMemoryStore>,
+    sql: &Arc<memoria_storage::SqlMemoryStore>,
+    git: &GitForDataService,
+    user_id: &str,
+    display: &str,
+    internal: &str,
+) -> Result<Option<String>, MemoriaError> {
+    let lock_key = format!("snapshot_create:{user_id}:{internal}");
+    for _ in 0..20 {
+        if lock_store.try_acquire_lock(&lock_key, 30).await? {
+            return Ok(Some(lock_key));
+        }
+        if sql
+            .get_snapshot_registration(user_id, display)
+            .await?
+            .is_some()
+            || sql
+                .get_snapshot_registration_by_internal(user_id, internal)
+                .await?
+                .is_some()
+            || git.get_snapshot(internal).await.map_err(git_err)?.is_some()
+        {
+            return Ok(None);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Ok(None)
 }
 
 pub fn list() -> Value {
@@ -304,13 +469,13 @@ pub fn list() -> Value {
 pub async fn call(
     name: &str,
     args: Value,
-    git: &Arc<GitForDataService>,
+    _git: &Arc<GitForDataService>,
     svc: &Arc<MemoryService>,
     user_id: &str,
 ) -> Result<Value, MemoriaError> {
     match name {
         "memory_snapshot" => {
-            let user_snapshots = visible_snapshots_for_user(git, svc, user_id)
+            let user_snapshots = visible_snapshots_for_user(svc, user_id)
                 .await?
                 .into_iter()
                 .filter(|s| s.registered)
@@ -321,22 +486,75 @@ pub async fn call(
                 )));
             }
             let snap_name = args["name"].as_str().unwrap_or("");
-            let internal = snap_internal(snap_name);
-            let display = snap_display(&internal);
-            let snap = git.create_snapshot(&internal).await.map_err(git_err)?;
-            snapshot_store(svc)?
-                .register_snapshot(user_id, &display, &snap.snapshot_name)
-                .await?;
-            Ok(mcp_text(&format!(
-                "Snapshot '{}' created at {:?}",
-                display, snap.timestamp
-            )))
+            let sql = snapshot_store(svc, user_id).await?;
+            let internal = snap_internal(
+                sql.database_name().ok_or_else(|| {
+                    MemoriaError::Internal(
+                        "Snapshot ops require a database-backed SQL store".into(),
+                    )
+                })?,
+                snap_name,
+            );
+            let display = if snap_name.starts_with(SNAP_PREFIX) {
+                snap_display(snap_name)
+            } else {
+                sanitize_name(snap_name)
+            };
+            let git = git_for_store(&sql)?;
+            let lock_store = svc.sql_store.as_ref().cloned().ok_or_else(|| {
+                MemoriaError::Internal("Snapshot ops require a database-backed SQL store".into())
+            })?;
+            let Some(lock_key) =
+                acquire_snapshot_create_lock(&lock_store, &sql, &git, user_id, &display, &internal)
+                    .await?
+            else {
+                return Ok(mcp_text(&format!("Snapshot '{}' already exists.", display)));
+            };
+            let result = async {
+                if sql
+                    .get_snapshot_registration(user_id, &display)
+                    .await?
+                    .is_some()
+                    || sql
+                        .get_snapshot_registration_by_internal(user_id, &internal)
+                        .await?
+                        .is_some()
+                {
+                    return Ok(mcp_text(&format!("Snapshot '{}' already exists.", display)));
+                }
+                let snap = match git.create_snapshot(&internal).await {
+                    Ok(snap) => snap,
+                    Err(err) => {
+                        if git
+                            .get_snapshot(&internal)
+                            .await
+                            .map_err(git_err)?
+                            .is_some()
+                        {
+                            return Ok(mcp_text(&format!(
+                                "Snapshot '{}' already exists.",
+                                display
+                            )));
+                        }
+                        return Err(git_err(err));
+                    }
+                };
+                sql.register_snapshot(user_id, &display, &snap.snapshot_name)
+                    .await?;
+                Ok(mcp_text(&format!(
+                    "Snapshot '{}' created at {:?}",
+                    display, snap.timestamp
+                )))
+            }
+            .await;
+            let _ = lock_store.release_lock(&lock_key).await;
+            result
         }
 
         "memory_snapshots" => {
             let limit = args["limit"].as_i64().unwrap_or(20) as usize;
             let offset = args["offset"].as_i64().unwrap_or(0) as usize;
-            let snaps = visible_snapshots_for_user(git, svc, user_id).await?;
+            let snaps = visible_snapshots_for_user(svc, user_id).await?;
             let total = snaps.len();
             let page: Vec<_> = snaps.into_iter().skip(offset).take(limit).collect();
             if page.is_empty() {
@@ -357,8 +575,9 @@ pub async fn call(
         }
 
         "memory_snapshot_delete" => {
-            let sql = snapshot_store(svc)?;
-            let snaps = visible_snapshots_for_user(git, svc, user_id).await?;
+            let sql = snapshot_store(svc, user_id).await?;
+            let git = git_for_store(&sql)?;
+            let snaps = visible_snapshots_for_user(svc, user_id).await?;
 
             let to_delete: Vec<VisibleSnapshot> = if let Some(names) = args["names"].as_str() {
                 let name_set: HashSet<String> =
@@ -412,8 +631,10 @@ pub async fn call(
         }
 
         "memory_rollback" => {
+            let sql = snapshot_store(svc, user_id).await?;
+            let git = git_for_store(&sql)?;
             let snap_name = args["name"].as_str().unwrap_or("");
-            let internal = resolve_snapshot_for_user(git, svc, user_id, snap_name)
+            let internal = resolve_snapshot_for_user(svc, user_id, snap_name)
                 .await?
                 .ok_or_else(|| MemoriaError::NotFound(format!("Snapshot '{snap_name}'")))?;
             // Restore mem_memories (required) + graph tables (best-effort, like Python)
@@ -423,6 +644,7 @@ pub async fn call(
             for table in &["memory_graph_nodes", "memory_graph_edges", "mem_edit_log"] {
                 let _ = git.restore_table_from_snapshot(table, &internal).await;
             }
+            sql.invalidate_user_caches(user_id).await;
             Ok(mcp_text(&format!("Rolled back to snapshot '{snap_name}'")))
         }
 
@@ -456,10 +678,8 @@ pub async fn call(
                 }
             }
 
-            let sql = svc
-                .sql_store
-                .as_ref()
-                .ok_or_else(|| MemoriaError::Internal("Branch ops require SQL store".into()))?;
+            let sql = svc.user_sql_store(user_id).await?;
+            let git = git_for_store(&sql)?;
 
             // Global branch limit
             let all_branches = sql.list_branches(user_id).await?;
@@ -475,7 +695,7 @@ pub async fn call(
             )
             .bind(user_id)
             .bind(branch_name)
-            .fetch_one(git.pool())
+            .fetch_one(sql.pool())
             .await
             .map_err(db_err)?;
             let cnt: i64 = dup.try_get("cnt").unwrap_or(0);
@@ -488,7 +708,9 @@ pub async fn call(
 
             if let Some(snap) = from_snapshot {
                 // Create branch from snapshot: restore snapshot to temp, then branch
-                let internal = snap_internal(snap);
+                let internal = resolve_snapshot_for_user(svc, user_id, snap)
+                    .await?
+                    .ok_or_else(|| MemoriaError::NotFound(format!("Snapshot '{snap}'")))?;
                 git.create_branch_from_snapshot(&table_name, "mem_memories", &internal)
                     .await
                     .map_err(git_err)?;
@@ -503,16 +725,16 @@ pub async fn call(
         }
 
         "memory_branches" => {
-            let branches = match &svc.sql_store {
-                Some(sql) => sql.list_branches(user_id).await?,
-                None => vec![],
+            let branches = match svc.user_sql_store(user_id).await {
+                Ok(sql) => sql.list_branches(user_id).await?,
+                Err(_) => vec![],
             };
-            let active = match &svc.sql_store {
-                Some(sql) => sql
+            let active = match svc.user_sql_store(user_id).await {
+                Ok(sql) => sql
                     .active_table(user_id)
                     .await
                     .unwrap_or_else(|_| "mem_memories".to_string()),
-                None => "mem_memories".to_string(),
+                Err(_) => "mem_memories".to_string(),
             };
             if branches.is_empty() {
                 return Ok(mcp_text("No branches. On main."));
@@ -530,10 +752,7 @@ pub async fn call(
 
         "memory_checkout" => {
             let branch = args["name"].as_str().unwrap_or("main");
-            let sql = svc
-                .sql_store
-                .as_ref()
-                .ok_or_else(|| MemoriaError::Internal("Branch ops require SQL store".into()))?;
+            let sql = svc.user_sql_store(user_id).await?;
             if branch == "main" {
                 sql.set_active_branch(user_id, "main").await?;
                 return Ok(mcp_text("Switched to branch 'main'"));
@@ -561,16 +780,15 @@ pub async fn call(
                     )));
                 }
             };
-            let sql = svc
-                .sql_store
-                .as_ref()
-                .ok_or_else(|| MemoriaError::Internal("Branch ops require SQL store".into()))?;
+            let sql = svc.user_sql_store(user_id).await?;
+            let git = git_for_store(&sql)?;
             let branches = sql.list_branches(user_id).await?;
             let table_name = branches
                 .iter()
                 .find(|(name, _)| name == source_branch)
                 .map(|(_, t)| t.clone())
                 .ok_or_else(|| MemoriaError::NotFound(format!("Branch '{source_branch}'")))?;
+            let table_name = validate_identifier(&table_name)?.to_string();
 
             // Safety limit: count new memories (branch rows not in main by PK)
             let count_sql = format!(
@@ -579,7 +797,7 @@ pub async fn call(
             );
             let new_count: i64 = sqlx::query(&count_sql)
                 .bind(user_id)
-                .fetch_one(git.pool())
+                .fetch_one(sql.pool())
                 .await
                 .map_err(db_err)?
                 .try_get("cnt")
@@ -642,69 +860,29 @@ pub async fn call(
             let inserted = sqlx::query(&insert_sql)
                 .bind(user_id)
                 .bind(user_id)
-                .execute(git.pool())
+                .execute(sql.pool())
                 .await
                 .map_err(db_err)?
                 .rows_affected();
 
-            // Conflict count: branch memories with real embeddings that have semantic match in main
-            let conflict_where = format!(
-                "FROM {table_name} b \
-                 WHERE b.user_id = ? AND b.is_active = 1 \
-                   AND b.embedding IS NOT NULL AND vector_dims(b.embedding) > 0 \
-                   AND NOT EXISTS (SELECT 1 FROM mem_memories m2 WHERE m2.memory_id = b.memory_id AND m2.is_active = 1) \
-                   AND EXISTS ( \
-                     SELECT 1 FROM mem_memories m \
-                     WHERE m.user_id = ? AND m.is_active = 1 \
-                       AND m.embedding IS NOT NULL AND vector_dims(m.embedding) > 0 \
-                       AND m.memory_type = b.memory_type \
-                       AND l2_distance(m.embedding, b.embedding) < {L2_CONFLICT} \
-                   )"
-            );
-            let conflict_count: i64 =
-                sqlx::query(&format!("SELECT COUNT(*) as cnt {conflict_where}"))
-                    .bind(user_id)
-                    .bind(user_id)
-                    .fetch_one(git.pool())
-                    .await
-                    .map_err(db_err)?
-                    .try_get("cnt")
-                    .unwrap_or(0);
-
-            let (replaced, skipped) = if strategy == "replace" && conflict_count > 0 {
-                let update_sql = format!(
-                    "UPDATE mem_memories m \
-                     SET m.content = ( \
-                       SELECT b.content FROM {table_name} b \
-                       WHERE b.user_id = ? AND b.is_active = 1 \
-                       AND b.memory_type = m.memory_type \
-                       AND b.embedding IS NOT NULL AND vector_dims(b.embedding) > 0 \
-                       AND NOT EXISTS (SELECT 1 FROM mem_memories m2 WHERE m2.memory_id = b.memory_id AND m2.is_active = 1) \
-                       AND l2_distance(m.embedding, b.embedding) < {L2_CONFLICT} \
-                       LIMIT 1 \
-                     ), \
-                     m.updated_at = NOW() \
-                     WHERE m.user_id = ? AND m.is_active = 1 \
-                       AND m.embedding IS NOT NULL AND vector_dims(m.embedding) > 0 \
-                     AND EXISTS ( \
-                       SELECT 1 FROM {table_name} b \
-                       WHERE b.user_id = ? AND b.is_active = 1 \
-                       AND b.memory_type = m.memory_type \
-                       AND b.embedding IS NOT NULL AND vector_dims(b.embedding) > 0 \
-                       AND NOT EXISTS (SELECT 1 FROM mem_memories m2 WHERE m2.memory_id = b.memory_id AND m2.is_active = 1) \
-                       AND l2_distance(m.embedding, b.embedding) < {L2_CONFLICT} \
-                     )"
-                );
-                sqlx::query(&update_sql)
-                    .bind(user_id)
-                    .bind(user_id)
-                    .bind(user_id)
-                    .execute(git.pool())
+            let replacements =
+                collect_replace_candidates(sql.pool(), &table_name, user_id, L2_CONFLICT).await?;
+            let (replaced, skipped) = if !replacements.is_empty() {
+                let mut tx = sql.pool().begin().await.map_err(db_err)?;
+                for candidate in &replacements {
+                    sqlx::query(
+                        "UPDATE mem_memories SET content = ?, updated_at = NOW() WHERE memory_id = ?",
+                    )
+                    .bind(&candidate.replacement_content)
+                    .bind(&candidate.main_memory_id)
+                    .execute(&mut *tx)
                     .await
                     .map_err(db_err)?;
-                (conflict_count as u64, 0u64)
+                }
+                tx.commit().await.map_err(db_err)?;
+                (replacements.len() as u64, 0u64)
             } else {
-                (0u64, conflict_count as u64)
+                (0u64, 0u64)
             };
 
             Ok(mcp_text(&format!(
@@ -717,10 +895,8 @@ pub async fn call(
             if branch == "main" {
                 return Ok(mcp_text("Cannot delete main"));
             }
-            let sql = svc
-                .sql_store
-                .as_ref()
-                .ok_or_else(|| MemoriaError::Internal("Branch ops require SQL store".into()))?;
+            let sql = svc.user_sql_store(user_id).await?;
+            let git = git_for_store(&sql)?;
             let branches = sql.list_branches(user_id).await?;
             if let Some((_, table_name)) = branches.iter().find(|(name, _)| name == branch) {
                 git.drop_branch(table_name).await.map_err(git_err)?;
@@ -738,10 +914,8 @@ pub async fn call(
         "memory_diff" => {
             let source_branch = args["source"].as_str().unwrap_or("");
             let limit = args["limit"].as_i64().unwrap_or(50);
-            let sql = svc
-                .sql_store
-                .as_ref()
-                .ok_or_else(|| MemoriaError::Internal("Branch ops require SQL store".into()))?;
+            let sql = svc.user_sql_store(user_id).await?;
+            let git = git_for_store(&sql)?;
             let branches = sql.list_branches(user_id).await?;
             let table_name = branches
                 .iter()
@@ -799,6 +973,98 @@ pub async fn call(
     }
 }
 
+async fn collect_replace_candidates(
+    pool: &sqlx::MySqlPool,
+    table_name: &str,
+    user_id: &str,
+    l2_conflict: f64,
+) -> Result<Vec<ReplaceCandidate>, MemoriaError> {
+    let table_name = validate_identifier(table_name)?;
+    let sql = format!(
+        "SELECT m.memory_id AS main_memory_id, \
+                b.memory_id AS branch_memory_id, \
+                b.content AS replacement_content, \
+                CAST(l2_distance(m.embedding, b.embedding) AS DOUBLE) AS conflict_distance \
+         FROM mem_memories m \
+         JOIN {table_name} b \
+           ON b.user_id = ? AND b.is_active = 1 \
+          AND b.content IS NOT NULL \
+          AND b.memory_type = m.memory_type \
+          AND b.embedding IS NOT NULL AND vector_dims(b.embedding) > 0 \
+         WHERE m.user_id = ? AND m.is_active = 1 \
+           AND m.embedding IS NOT NULL AND vector_dims(m.embedding) > 0 \
+           AND NOT EXISTS (SELECT 1 FROM mem_memories m2 WHERE m2.memory_id = b.memory_id AND m2.is_active = 1) \
+           AND l2_distance(m.embedding, b.embedding) < {l2_conflict}"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(user_id)
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)?;
+
+    let mut chosen: HashMap<String, ReplaceCandidate> = HashMap::new();
+    for row in rows {
+        let candidate = ReplaceCandidate {
+            main_memory_id: row.try_get("main_memory_id").map_err(db_err)?,
+            branch_memory_id: row.try_get("branch_memory_id").map_err(db_err)?,
+            replacement_content: row.try_get("replacement_content").map_err(db_err)?,
+            conflict_distance: row.try_get("conflict_distance").map_err(db_err)?,
+        };
+        match chosen.get_mut(&candidate.main_memory_id) {
+            Some(current)
+                if candidate.conflict_distance < current.conflict_distance
+                    || (candidate.conflict_distance == current.conflict_distance
+                        && candidate.branch_memory_id < current.branch_memory_id) =>
+            {
+                *current = candidate;
+            }
+            None => {
+                chosen.insert(candidate.main_memory_id.clone(), candidate);
+            }
+            _ => {}
+        }
+    }
+
+    let mut replacements = chosen.into_values().collect::<Vec<_>>();
+    replacements.sort_by(|a, b| a.main_memory_id.cmp(&b.main_memory_id));
+    Ok(replacements)
+}
+
 fn mcp_text(text: &str) -> Value {
     json!({"content": [{"type": "text", "text": text}]})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{safety_prefix, snap_internal, validate_identifier, MAX_IDENTIFIER_LEN};
+
+    #[test]
+    fn scoped_snapshot_internal_names_stay_within_matrixone_limit() {
+        let internal = snap_internal(
+            "memoria_shared_db_with_a_really_long_name_for_product_runs",
+            "snapshot_name_that_is_long_but_should_still_fit_with_db_scope",
+        );
+        assert!(internal.len() <= MAX_IDENTIFIER_LEN, "{internal}");
+    }
+
+    #[test]
+    fn scoped_safety_prefix_stays_bounded() {
+        let prefix = safety_prefix(Some(
+            "memoria_shared_db_with_a_really_long_name_for_product_runs",
+        ));
+        assert!(prefix.len() < MAX_IDENTIFIER_LEN, "{prefix}");
+    }
+
+    #[test]
+    fn validate_identifier_accepts_safe_names() {
+        assert_eq!(validate_identifier("br_valid_123").unwrap(), "br_valid_123");
+    }
+
+    #[test]
+    fn validate_identifier_rejects_unsafe_names() {
+        assert!(validate_identifier("br_bad-name").is_err());
+        assert!(validate_identifier("br bad").is_err());
+        assert!(validate_identifier("br`bad").is_err());
+    }
 }
